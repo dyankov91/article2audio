@@ -20,6 +20,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from extractor import extract_from_url, extract_from_file
+from cleaner import clean_for_audio
+from summarizer import get_summary, DEFAULT_MODEL
 from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED
 from assembler import concat_to_m4b
@@ -57,6 +59,10 @@ def main():
     parser.add_argument("--no-upload", action="store_true",
                         help="Skip S3 upload and podcast feed update")
     parser.add_argument("--output", "-o", help="Custom output path")
+    parser.add_argument("--model", "-m", default=DEFAULT_MODEL,
+                        help=f"Ollama model for summaries (default: {DEFAULT_MODEL})")
+    parser.add_argument("--no-summary", action="store_true",
+                        help="Skip episode summary generation")
 
     args = parser.parse_args()
 
@@ -80,6 +86,18 @@ def main():
         print(f"  Fetching article...", end="", flush=True)
         text, auto_title = extract_from_url(args.url)
         title = args.title or auto_title or "Untitled Article"
+        print(" done")
+
+    # Clean text for audio
+    print(f"  Cleaning text for audio...", end="", flush=True)
+    text = clean_for_audio(text)
+    print(" done")
+
+    # Generate episode summary
+    summary = None
+    if not args.no_summary:
+        print(f"  Generating summary ({args.model})...", end="", flush=True)
+        summary = get_summary(text, title, args.model)
         print(" done")
 
     word_count = len(text.split())
@@ -111,7 +129,7 @@ def main():
     if will_upload:
         try:
             print(f"  Publishing to podcast feed...", end="", flush=True)
-            upload_audiobook(output_path, title, source_url)
+            upload_audiobook(output_path, title, source_url, summary)
             print(" done")
             feed_url = get_feed_url()
             print()

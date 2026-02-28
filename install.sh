@@ -98,6 +98,51 @@ else
   fi
 fi
 
+# ─── Optional: Ollama for episode summaries ──────────────────────────────────
+
+echo ""
+echo "📝 Optional: Enable AI episode summaries via Ollama?"
+echo "   Generates 2-3 sentence descriptions for each episode in the podcast feed."
+echo ""
+
+if command -v ollama &>/dev/null; then
+  echo "✅ Ollama is installed"
+  # Check if default model is available
+  if ollama list 2>/dev/null | grep -q "llama3.2"; then
+    echo "✅ llama3.2 model is available"
+  else
+    read -p "   Pull llama3.2 model (~2GB)? (y/n): " pull_model
+    if [[ "$pull_model" =~ ^[Yy]$ ]]; then
+      # Ensure server is running
+      if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+        echo "   Starting Ollama server..."
+        brew services start ollama
+        sleep 2
+      fi
+      echo "   Downloading llama3.2..."
+      ollama pull llama3.2
+      echo "   ✅ Model ready"
+    else
+      echo "   Skipped. Use --no-summary or pull a model later: ollama pull llama3.2"
+    fi
+  fi
+else
+  read -p "   Install Ollama? (y/n): " install_ollama
+  if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
+    echo "   Installing Ollama..."
+    brew install ollama
+    echo "   Starting Ollama server..."
+    brew services start ollama
+    sleep 2
+    echo "   Pulling llama3.2 model (~2GB)..."
+    ollama pull llama3.2
+    echo "   ✅ Ollama ready (running as background service)"
+  else
+    echo "   Skipped. Summaries will use fallback (first sentence)."
+    echo "   Install later: brew install ollama && ollama pull llama3.2"
+  fi
+fi
+
 # ─── Optional: AWS / Podcast sync ────────────────────────────────────────────
 
 echo ""

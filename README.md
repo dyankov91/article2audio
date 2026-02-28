@@ -5,6 +5,8 @@ Convert any article URL into an audiobook on Apple Silicon. Generates audio loca
 ## Features
 
 - **Any URL** — articles, blog posts, newsletters, X/Twitter threads
+- **Text cleaning** — automatically strips URLs, markdown, code blocks, CTAs, and web artifacts before TTS
+- **Episode summaries** — generates 2-3 sentence descriptions via Ollama (optional, graceful fallback)
 - **Apple Silicon TTS** — Kokoro model via MLX, fast and natural-sounding
 - **Podcast feed** — uploads to S3 and updates an RSS feed, subscribe once in Apple Podcasts
 - **Offline fallback** — works without AWS, just saves M4B files locally
@@ -16,6 +18,7 @@ Convert any article URL into an audiobook on Apple Silicon. Generates audio loca
 - Node.js (for [bird](https://bird.fast) X/Twitter CLI)
 - ~500MB disk for model + dependencies
 - AWS account (optional, for podcast sync)
+- [Ollama](https://ollama.com) (optional, for episode summaries)
 
 ## Quick Start
 
@@ -53,6 +56,12 @@ a2pod https://example.com/article --no-upload
 
 # Custom output path
 a2pod https://example.com/article --output ~/Desktop/article.m4b
+
+# Skip summary generation
+a2pod https://example.com/article --no-summary
+
+# Use a different Ollama model for summaries
+a2pod https://example.com/article --model mistral
 ```
 
 ### X/Twitter
@@ -70,6 +79,22 @@ bird check
 ```
 
 Bird auto-detects cookies from Safari/Chrome/Firefox. If it can't find them, log into X in your browser and run `bird check` again.
+
+## Episode Summaries
+
+Summaries are generated automatically via a local Ollama model and added to the podcast feed as episode descriptions (visible in Apple Podcasts).
+
+To set up:
+
+```bash
+# Install Ollama
+brew install ollama
+
+# Pull a model (default: llama3.2)
+ollama pull llama3.2
+```
+
+If Ollama isn't running, a fallback summary (first sentence of the article) is used instead. Use `--no-summary` to skip entirely, or `--model <name>` to use a different model.
 
 ## Podcast Setup
 
@@ -111,14 +136,16 @@ The S3 bucket (`my-podcast-feed`) needs public read access for Apple Podcasts to
 ## How It Works
 
 ```
-URL → Scrape (trafilatura/bird) → Chunk text → TTS (Kokoro on MLX) → M4B → S3 → Podcast Feed
+URL → Scrape → Clean → Summarize → Chunk → TTS → M4A → S3 → Podcast Feed
 ```
 
-1. **Scrape** — trafilatura extracts clean article text; bird handles X/Twitter
-2. **Chunk** — splits into ~2000 char segments at sentence boundaries
-3. **TTS** — Kokoro-82M generates audio locally on Apple Silicon
-4. **Assemble** — ffmpeg concatenates chunks into M4B audiobook with metadata
-5. **Publish** — uploads to S3 and updates the podcast RSS feed
+1. **Scrape** — trafilatura extracts article text; bird handles X/Twitter
+2. **Clean** — regex strips URLs, markdown, code blocks, CTAs, and web artifacts
+3. **Summarize** — Ollama generates a 2-3 sentence episode description (optional)
+4. **Chunk** — splits into ~2000 char segments at sentence boundaries
+5. **TTS** — Kokoro-82M generates audio locally on Apple Silicon
+6. **Assemble** — ffmpeg concatenates chunks into M4A with metadata
+7. **Publish** — uploads to S3 and updates the podcast RSS feed
 
 ## File Structure
 
@@ -129,9 +156,11 @@ a2pod/
 │   └── a2pod       # Main CLI
 ├── lib/
 │   ├── extractor.py        # URL/file text extraction
+│   ├── cleaner.py          # Regex text cleaning for audio
+│   ├── summarizer.py       # Ollama episode summaries
 │   ├── chunker.py          # Text splitting
 │   ├── tts.py              # MLX Audio TTS wrapper
-│   ├── assembler.py        # Audio concat + M4B packaging
+│   ├── assembler.py        # Audio concat + M4A packaging
 │   └── publisher.py        # S3 upload + podcast RSS feed
 └── README.md
 ```

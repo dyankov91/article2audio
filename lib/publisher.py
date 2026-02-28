@@ -126,7 +126,8 @@ def _fetch_existing_feed(s3, config: dict) -> ET.Element | None:
 def _add_feed_item(rss: ET.Element, title: str, s3_key: str,
                    file_size: int, base_url: str,
                    duration_seconds: int | None = None,
-                   source_url: str | None = None) -> None:
+                   source_url: str | None = None,
+                   summary: str | None = None) -> None:
     """Prepend a new <item> to the RSS channel (newest first)."""
     channel = rss.find("channel")
     enclosure_url = f"{base_url}/{s3_key}"
@@ -139,6 +140,9 @@ def _add_feed_item(rss: ET.Element, title: str, s3_key: str,
         domain = urlparse(source_url).netloc.removeprefix("www.")
         ET.SubElement(item, "{%s}subtitle" % ITUNES_NS).text = domain
         ET.SubElement(item, "link").text = source_url
+    if summary:
+        ET.SubElement(item, "description").text = summary
+        ET.SubElement(item, "{%s}summary" % ITUNES_NS).text = summary
     ET.SubElement(item, "enclosure", {
         "url": enclosure_url,
         "length": str(file_size),
@@ -158,7 +162,8 @@ def _add_feed_item(rss: ET.Element, title: str, s3_key: str,
         channel.append(item)
 
 
-def upload_audiobook(local_path: str, title: str, source_url: str | None = None) -> str:
+def upload_audiobook(local_path: str, title: str, source_url: str | None = None,
+                     summary: str | None = None) -> str:
     """Upload audio to S3 and update the podcast feed. Returns the public URL."""
     s3, config = _get_s3_client()
     base_url = _base_url(config)
@@ -190,7 +195,7 @@ def upload_audiobook(local_path: str, title: str, source_url: str | None = None)
         image_el.set("href", f"{base_url}/{ARTWORK_KEY}")
 
     duration = _get_duration_seconds(local_path)
-    _add_feed_item(rss, title, s3_key, file_size, base_url, duration, source_url)
+    _add_feed_item(rss, title, s3_key, file_size, base_url, duration, source_url, summary)
 
     # Strip any existing xmlns:itunes from the root to avoid duplicates
     # (ElementTree re-adds it via register_namespace)
