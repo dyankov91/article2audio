@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-a2pod — Convert any article URL to an audiobook in Apple Books.
+a2pod — Convert any article URL to an audiobook.
 
 Usage:
-    a2pod <url> [--voice VOICE] [--speed SPEED] [--no-import]
+    a2pod <url> [--voice VOICE] [--speed SPEED] [--no-upload]
     a2pod --file <path> [--title TITLE] [--voice VOICE] [--speed SPEED]
 """
 
@@ -13,6 +13,7 @@ import re
 import sys
 import tempfile
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
 # Add lib to path
@@ -21,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from extractor import extract_from_url, extract_from_file
 from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED
-from assembler import concat_to_m4b, import_to_books
+from assembler import concat_to_m4b
+from publisher import is_aws_configured, upload_audiobook, get_feed_url
 
 OUTPUT_DIR = Path.home() / "A2Pod"
 
@@ -35,13 +37,14 @@ def sanitize_filename(title: str) -> str:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Convert articles to audiobooks for Apple Books",
+        description="Convert articles to audiobooks and publish to podcast feed",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=textwrap.dedent("""\
             Examples:
               a2pod https://example.com/article
               a2pod https://example.com/article --voice am_michael
               a2pod --file article.txt --title "My Article"
+              a2pod https://example.com/article --no-upload
         """),
     )
     parser.add_argument("url", nargs="?", help="Article URL to convert")
@@ -51,8 +54,8 @@ def main():
                         help=f"TTS voice (default: {DEFAULT_VOICE})")
     parser.add_argument("--speed", "-s", type=float, default=DEFAULT_SPEED,
                         help=f"Speech speed (default: {DEFAULT_SPEED})")
-    parser.add_argument("--no-import", action="store_true",
-                        help="Don't auto-import to Apple Books")
+    parser.add_argument("--no-upload", action="store_true",
+                        help="Skip S3 upload and podcast feed update")
     parser.add_argument("--output", "-o", help="Custom output path")
 
     args = parser.parse_args()
@@ -60,6 +63,12 @@ def main():
     if not args.url and not args.file:
         parser.print_help()
         sys.exit(1)
+
+    # Check upload capability early
+    aws_ready = is_aws_configured()
+    will_upload = aws_ready and not args.no_upload
+    if not will_upload and not args.no_upload:
+        print("⚠️  AWS not configured — saving locally only.")
 
     # Extract text
     if args.file:
@@ -86,16 +95,25 @@ def main():
 
         OUTPUT_DIR.mkdir(exist_ok=True)
         filename = sanitize_filename(title)
-        output_path = args.output or str(OUTPUT_DIR / f"{filename}.m4b")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = args.output or str(OUTPUT_DIR / f"{filename}_{timestamp}.m4b")
 
         print("🔨 Building audiobook...")
         concat_to_m4b(wav_files, output_path, title)
 
-    if not args.no_import:
-        import_to_books(output_path)
-
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
-    print(f"\n✅ Done! {size_mb:.1f} MB audiobook ready.")
+    print(f"\n✅ Done! {size_mb:.1f} MB saved to: {output_path}")
+
+    # Upload to S3 and update podcast feed
+    if will_upload:
+        try:
+            upload_audiobook(output_path, title)
+            feed_url = get_feed_url()
+            print(f"\n📱 Subscribe in Apple Podcasts:")
+            print(f"   {feed_url}")
+        except Exception as e:
+            print(f"\n❌ Upload failed: {e}")
+            print(f"   Audiobook saved locally at: {output_path}")
 
 
 if __name__ == "__main__":

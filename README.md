@@ -1,15 +1,13 @@
 # A2Pod 🎧
 
-Convert any article URL into an audiobook on Apple Silicon. Share from any app → auto-converts → appears in Apple Books on all your devices.
+Convert any article URL into an audiobook on Apple Silicon. Generates audio locally, uploads to S3, and publishes a podcast feed you can subscribe to in Apple Podcasts on your iPhone.
 
 ## Features
 
 - **Any URL** — articles, blog posts, newsletters, X/Twitter threads
 - **Apple Silicon TTS** — Kokoro model via MLX, fast and natural-sounding
-- **Apple Books integration** — auto-imports, syncs to iPhone via iCloud
-- **Share Sheet** — queue articles from any app on iPhone or Mac
-- **Background processing** — launchd job checks queue every 5 minutes
-- **macOS notifications** — get notified when audiobooks are ready
+- **Podcast feed** — uploads to S3 and updates an RSS feed, subscribe once in Apple Podcasts
+- **Offline fallback** — works without AWS, just saves M4B files locally
 
 ## Requirements
 
@@ -17,6 +15,7 @@ Convert any article URL into an audiobook on Apple Silicon. Share from any app �
 - Python 3.10+
 - Node.js (for [bird](https://bird.fast) X/Twitter CLI)
 - ~500MB disk for model + dependencies
+- AWS account (optional, for podcast sync)
 
 ## Quick Start
 
@@ -26,7 +25,7 @@ cd a2pod
 ./install.sh
 ```
 
-The installer handles everything: dependencies, model download, background queue, PATH setup, and Share Sheet shortcut.
+The installer handles: dependencies, model download, PATH setup, and optional AWS configuration.
 
 Then:
 
@@ -36,10 +35,8 @@ a2pod https://example.com/some-article
 
 ## Usage
 
-### Direct (terminal)
-
 ```bash
-# Basic — converts and opens in Books
+# Basic — converts and uploads to podcast feed
 a2pod https://example.com/article
 
 # Custom voice (male)
@@ -51,24 +48,12 @@ a2pod https://example.com/article --speed 1.2
 # From a local text file
 a2pod --file article.txt --title "My Article"
 
-# Generate only, don't import to Books
-a2pod https://example.com/article --no-import
+# Local only, skip S3 upload
+a2pod https://example.com/article --no-upload
 
 # Custom output path
 a2pod https://example.com/article --output ~/Desktop/article.m4b
 ```
-
-### Queue (from anywhere)
-
-```bash
-# Queue a link for background processing
-add-to-queue https://example.com/article
-
-# Or append directly to the queue file
-echo "https://example.com/article" >> ~/Library/Mobile\ Documents/com~apple~CloudDocs/A2Pod/queue.txt
-```
-
-The queue file lives in iCloud Drive — add links from any device.
 
 ### X/Twitter
 
@@ -78,7 +63,7 @@ Works with tweets and threads:
 a2pod https://x.com/someuser/status/1234567890
 ```
 
-Uses the [bird](https://bird.fast) CLI (`npm install -g @steipete/bird@0.8.0`). After install, verify auth:
+Uses the [bird](https://bird.fast) CLI. After install, verify auth:
 
 ```bash
 bird check
@@ -86,32 +71,30 @@ bird check
 
 Bird auto-detects cookies from Safari/Chrome/Firefox. If it can't find them, log into X in your browser and run `bird check` again.
 
-> **Note:** bird uses X's undocumented API and may break if X changes their endpoints. If bird stops working, [x-cli](https://github.com/Infatoshi/x-cli) is an alternative that uses the official X API v2 (requires a developer account).
+## Podcast Setup
 
-## Share Sheet Setup
+When AWS is configured, each audiobook is uploaded to S3 and the podcast feed is updated automatically. Subscribe once in Apple Podcasts:
 
-The installer offers to create the **A2Pod** shortcut automatically — just tap **"Add Shortcut"** when the Shortcuts app opens.
-
-**Required permissions** (one-time):
-1. Shortcuts → Settings → Advanced → enable **"Allow Running Scripts"**
-2. System Settings → Privacy & Security → **Full Disk Access** → add **Shortcuts** (needed to write to iCloud Drive)
-
-If you skipped the installer or want to set it up manually:
-
-1. Open **Shortcuts** app (Mac or iPhone)
-2. Tap **+** to create a new shortcut
-3. Name it **"A2Pod"**
-4. Tap **"Receive input from"** at the top → select **URLs** and enable **Share Sheet**
-5. Add action: **Run Shell Script**
-6. Set shell to `/bin/bash` and paste:
-   ```bash
-   echo "$(cat)" >> "$HOME/Library/Mobile Documents/com~apple~CloudDocs/A2Pod/queue.txt"
+1. Open **Apple Podcasts** on your iPhone
+2. Tap **Search** → tap the search bar
+3. Paste the feed URL:
    ```
-7. Save
+   https://my-podcast-feed.s3.eu-central-1.amazonaws.com/feed.xml
+   ```
+4. Tap **Follow**
 
-Now: **Share → A2Pod** from Safari, Telegram, X, Chrome, Reddit, anywhere.
+Every new article you convert will appear as an episode.
 
-Your Mac processes the queue every 5 minutes and sends a notification when done.
+### AWS Setup
+
+The installer prompts for AWS credentials. To configure manually:
+
+```bash
+aws configure --profile default
+# Region: eu-central-1
+```
+
+The S3 bucket (`my-podcast-feed`) needs public read access for Apple Podcasts to fetch the feed and audio files.
 
 ## Available Voices
 
@@ -128,40 +111,36 @@ Your Mac processes the queue every 5 minutes and sends a notification when done.
 ## How It Works
 
 ```
-URL → Scrape (trafilatura/bird) → Chunk text → TTS (Kokoro on MLX) → M4B → Apple Books
+URL → Scrape (trafilatura/bird) → Chunk text → TTS (Kokoro on MLX) → M4B → S3 → Podcast Feed
 ```
 
 1. **Scrape** — trafilatura extracts clean article text; bird handles X/Twitter
 2. **Chunk** — splits into ~2000 char segments at sentence boundaries
 3. **TTS** — Kokoro-82M generates audio locally on Apple Silicon
 4. **Assemble** — ffmpeg concatenates chunks into M4B audiobook with metadata
-5. **Import** — opens in Apple Books, syncs to iPhone via iCloud
+5. **Publish** — uploads to S3 and updates the podcast RSS feed
 
 ## File Structure
 
 ```
 a2pod/
-├── install.sh              # One-time setup (deps, model, launchd)
+├── install.sh              # One-time setup (deps, model, AWS)
 ├── bin/
-│   ├── a2pod       # Main CLI
-│   └── add-to-queue        # Queue helper
+│   └── a2pod       # Main CLI
 ├── lib/
 │   ├── extractor.py        # URL/file text extraction
 │   ├── chunker.py          # Text splitting
 │   ├── tts.py              # MLX Audio TTS wrapper
-│   └── assembler.py        # Audio concat + M4B packaging
-├── config/
-│   ├── com.a2pod.queue.plist  # launchd config
-│   └── A2Pod.plist            # Share Sheet shortcut template
-├── queue-processor.sh      # Background queue runner
+│   ├── assembler.py        # Audio concat + M4B packaging
+│   └── publisher.py        # S3 upload + podcast RSS feed
 └── README.md
 ```
 
 ## Output
 
 - Audiobooks saved to `~/A2Pod/`
-- Queue file at `iCloud Drive/A2Pod/queue.txt`
-- Logs at `/tmp/a2pod.log`
+- Uploaded to `s3://my-podcast-feed/audiobooks/`
+- Feed at `https://my-podcast-feed.s3.eu-central-1.amazonaws.com/feed.xml`
 
 ## License
 

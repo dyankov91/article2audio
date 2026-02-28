@@ -16,6 +16,7 @@ if [[ "$(uname -m)" != "arm64" ]]; then
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+CONFIG_DIR="$HOME/.config/a2pod"
 
 # ─── Dependencies ────────────────────────────────────────────────────────────
 
@@ -58,7 +59,7 @@ fi
 # Python packages
 echo "📦 Installing Python packages..."
 pip3 install --upgrade pip --quiet
-pip3 install mlx-audio trafilatura soundfile "misaki[en]" phonemizer espeakng_loader --quiet
+pip3 install mlx-audio trafilatura soundfile "misaki[en]" phonemizer espeakng_loader boto3 --quiet
 
 # Pre-download Kokoro model
 echo "🧠 Downloading Kokoro TTS model (~160MB)..."
@@ -71,40 +72,14 @@ print('✅ Model cached')
 # ─── Make scripts executable ─────────────────────────────────────────────────
 
 chmod +x "$SCRIPT_DIR/bin/a2pod"
-chmod +x "$SCRIPT_DIR/bin/add-to-queue"
-chmod +x "$SCRIPT_DIR/queue-processor.sh"
-
-# ─── iCloud queue folder ────────────────────────────────────────────────────
-
-echo ""
-echo "📂 Setting up iCloud queue..."
-QUEUE_DIR="$HOME/Library/Mobile Documents/com~apple~CloudDocs/A2Pod"
-mkdir -p "$QUEUE_DIR"
-touch "$QUEUE_DIR/queue.txt"
-touch "$QUEUE_DIR/done.txt"
-
-# ─── launchd (background processor) ─────────────────────────────────────────
-
-echo "⏰ Installing background queue processor..."
-PLIST_DST="$HOME/Library/LaunchAgents/com.a2pod.queue.plist"
-sed "s|INSTALL_PATH|$SCRIPT_DIR|g" "$SCRIPT_DIR/config/com.a2pod.queue.plist" > "$PLIST_DST"
-launchctl unload "$PLIST_DST" 2>/dev/null || true
-launchctl load "$PLIST_DST"
-echo "✅ Queue processor running (checks every 5 min)"
 
 # ─── Output directory ───────────────────────────────────────────────────────
 
 mkdir -p "$HOME/A2Pod"
 
-# ─── Done ────────────────────────────────────────────────────────────────────
-
-echo ""
-echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo ""
-echo "✅ Setup complete!"
-echo ""
 # ─── PATH setup ──────────────────────────────────────────────────────────────
 
+echo ""
 if echo "$PATH" | tr ':' '\n' | grep -qx "$SCRIPT_DIR/bin"; then
   echo "✅ $SCRIPT_DIR/bin is already in PATH"
 elif grep -q "$SCRIPT_DIR/bin" ~/.zshrc 2>/dev/null; then
@@ -123,49 +98,190 @@ else
   fi
 fi
 
-# ─── Share Sheet shortcut ─────────────────────────────────────────────────────
+# ─── Optional: AWS / Podcast sync ────────────────────────────────────────────
 
 echo ""
-if shortcuts list 2>/dev/null | grep -qx "A2Pod"; then
-  echo "✅ A2Pod shortcut already installed"
+echo "📡 Optional: Enable podcast sync via S3?"
+echo "   Audiobooks upload to S3 and appear in Apple Podcasts on iPhone."
+echo ""
+
+# Check if already configured
+if [[ -f "$CONFIG_DIR/config" ]] && python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+if 'aws' in cfg and cfg['aws'].get('profile') and cfg['aws'].get('bucket'):
+    import boto3
+    s = boto3.Session(profile_name=cfg['aws']['profile'])
+    assert s.get_credentials()
+" 2>/dev/null; then
+  EXISTING_PROFILE=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg['aws']['profile'])
+")
+  EXISTING_BUCKET=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg['aws']['bucket'])
+")
+  EXISTING_REGION=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg['aws']['region'])
+")
+  echo "✅ AWS already configured (profile: $EXISTING_PROFILE, bucket: $EXISTING_BUCKET)"
+  echo "   Feed URL: https://$EXISTING_BUCKET.s3.$EXISTING_REGION.amazonaws.com/feed.xml"
 else
-  echo "📌 Install 'A2Pod' Share Sheet shortcut?"
-  echo "   (Share any URL → auto-queue for audio conversion)"
-  read -p "   (y/n): " add_shortcut
-  if [[ "$add_shortcut" =~ ^[Yy]$ ]]; then
-    UNSIGNED="/tmp/a2a-unsigned-$$.shortcut"
-    SIGNED="/tmp/A2Pod.shortcut"
-    plutil -convert binary1 -o "$UNSIGNED" "$SCRIPT_DIR/config/A2Pod.plist"
-    shortcuts sign -m anyone -i "$UNSIGNED" -o "$SIGNED" 2>/dev/null
-    rm -f "$UNSIGNED"
-    open "$SIGNED"
-    echo "   ⏳ Shortcuts app will open — tap 'Add Shortcut' to confirm."
+  read -p "   Set up AWS for podcast sync? (y/n): " setup_aws
+  if [[ "$setup_aws" =~ ^[Yy]$ ]]; then
     echo ""
-    echo "   ⚠️  Two one-time permissions needed:"
-    echo "   1. In Shortcuts → Settings → Advanced → enable 'Allow Running Scripts'"
-    echo "   2. Grant Full Disk Access to allow writing to iCloud Drive:"
-    read -p "      Open Privacy settings now? (y/n): " open_privacy
-    if [[ "$open_privacy" =~ ^[Yy]$ ]]; then
-      open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
-      echo "      → Add 'Background Shortcut Runner' (or 'Shortcuts') to Full Disk Access"
-    else
-      echo "      → System Settings → Privacy & Security → Full Disk Access"
-      echo "      → Add 'Background Shortcut Runner' (or 'Shortcuts')"
+
+    # Detect existing AWS profiles
+    PROFILES=""
+    if [[ -f "$HOME/.aws/credentials" ]]; then
+      PROFILES=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.aws/credentials'))
+for s in cfg.sections():
+    print(s)
+" 2>/dev/null)
     fi
-  else
+
+    AWS_PROFILE=""
+    if [[ -n "$PROFILES" ]]; then
+      echo "   Existing AWS profiles found:"
+      i=1
+      while IFS= read -r p; do
+        echo "   $i) $p"
+        i=$((i + 1))
+      done <<< "$PROFILES"
+      echo "   $i) Enter new credentials"
+      echo ""
+      read -p "   Choose (1-$i): " choice
+
+      PROFILE_COUNT=$(echo "$PROFILES" | wc -l | tr -d ' ')
+      if [[ "$choice" -ge 1 && "$choice" -le "$PROFILE_COUNT" ]]; then
+        AWS_PROFILE=$(echo "$PROFILES" | sed -n "${choice}p")
+        echo "   Using profile: $AWS_PROFILE"
+      fi
+    fi
+
+    # If no profile selected, ask for new credentials
+    if [[ -z "$AWS_PROFILE" ]]; then
+      echo ""
+      read -p "   Profile name: " AWS_PROFILE
+      read -p "   AWS Access Key ID: " aws_key
+      read -s -p "   AWS Secret Access Key: " aws_secret
+      echo ""
+
+      mkdir -p ~/.aws
+      python3 -c "
+import configparser, os
+creds_path = os.path.expanduser('~/.aws/credentials')
+creds = configparser.ConfigParser()
+creds.read(creds_path)
+creds['$AWS_PROFILE'] = {
+    'aws_access_key_id': '$aws_key',
+    'aws_secret_access_key': '$aws_secret'
+}
+with open(creds_path, 'w') as f:
+    creds.write(f)
+"
+      echo "   ✅ Credentials saved to ~/.aws/credentials"
+    fi
+
+    # Get region from profile config or ask
+    AWS_REGION=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.aws/config'))
+section = 'profile $AWS_PROFILE' if '$AWS_PROFILE' != 'default' else 'default'
+print(cfg.get(section, 'region', fallback=''))
+" 2>/dev/null)
+
+    if [[ -z "$AWS_REGION" ]]; then
+      read -p "   AWS Region [eu-central-1]: " AWS_REGION
+      AWS_REGION="${AWS_REGION:-eu-central-1}"
+
+      python3 -c "
+import configparser, os
+cfg_path = os.path.expanduser('~/.aws/config')
+cfg = configparser.ConfigParser()
+cfg.read(cfg_path)
+section = 'profile $AWS_PROFILE' if '$AWS_PROFILE' != 'default' else 'default'
+if not cfg.has_section(section):
+    cfg.add_section(section)
+cfg.set(section, 'region', '$AWS_REGION')
+with open(cfg_path, 'w') as f:
+    cfg.write(f)
+"
+    else
+      echo "   Region: $AWS_REGION"
+    fi
+
+    # S3 bucket setup
     echo ""
-    echo "   To create manually:"
-    echo "   1. Open Shortcuts app"
-    echo "   2. New shortcut → name: 'A2Pod'"
-    echo "   3. Set 'Receive input from' → URLs + Share Sheet"
-    echo "   4. Add action: Run Shell Script"
-    echo "   5. Paste:"
-    echo "      echo \"\$(cat)\" >> \"\$HOME/Library/Mobile Documents/com~apple~CloudDocs/A2Pod/queue.txt\""
+    read -p "   S3 bucket name [my-podcast-feed]: " AWS_BUCKET
+    AWS_BUCKET="${AWS_BUCKET:-my-podcast-feed}"
+
+    # Check if bucket exists
+    if aws s3api head-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" 2>/dev/null; then
+      echo "   ✅ Bucket '$AWS_BUCKET' exists"
+    else
+      echo "   Creating bucket '$AWS_BUCKET'..."
+      if [[ "$AWS_REGION" == "us-east-1" ]]; then
+        aws s3api create-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" --region "$AWS_REGION"
+      else
+        aws s3api create-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+          --create-bucket-configuration LocationConstraint="$AWS_REGION"
+      fi
+      echo "   ✅ Bucket created"
+    fi
+
+    # Enable public read access
+    echo "   Configuring public access for podcast feed..."
+    aws s3api put-public-access-block --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" \
+      --public-access-block-configuration \
+      "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false" \
+      2>/dev/null || true
+
+    aws s3api put-bucket-policy --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" \
+      --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicRead\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::${AWS_BUCKET}/*\"}]}" \
+      2>/dev/null || true
+
+    # Save config
+    mkdir -p "$CONFIG_DIR"
+    cat > "$CONFIG_DIR/config" <<CONF
+[aws]
+profile = $AWS_PROFILE
+bucket = $AWS_BUCKET
+region = $AWS_REGION
+CONF
+
+    FEED_URL="https://$AWS_BUCKET.s3.$AWS_REGION.amazonaws.com/feed.xml"
+    echo ""
+    echo "   ✅ Podcast sync configured!"
+    echo "   Feed URL: $FEED_URL"
+    echo "   Subscribe to this URL in Apple Podcasts on your iPhone."
+  else
+    echo "   Skipped. Audiobooks will be saved locally only."
+    echo "   Run install.sh again to set up later."
   fi
 fi
 
+# ─── Done ────────────────────────────────────────────────────────────────────
+
+echo ""
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo ""
+echo "✅ Setup complete!"
 echo ""
 echo "📌 Usage:"
 echo "  a2pod https://some-article.com"
-echo "  add-to-queue https://some-article.com"
+echo "  a2pod https://some-article.com --no-upload"
 echo ""
