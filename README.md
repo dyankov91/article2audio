@@ -26,6 +26,8 @@ cd a2pod
 ./install.sh
 ```
 
+The installer handles everything: dependencies, model download, background queue, PATH setup, and Share Sheet shortcut.
+
 Then:
 
 ```bash
@@ -86,9 +88,11 @@ Bird auto-detects cookies from Safari/Chrome/Firefox. If it can't find them, log
 
 > **Note:** bird uses X's undocumented API and may break if X changes their endpoints. If bird stops working, [x-cli](https://github.com/Infatoshi/x-cli) is an alternative that uses the official X API v2 (requires a developer account).
 
-## Share Sheet Setup (one-time)
+## Share Sheet Setup
 
-Set this up to queue articles from any app with one tap:
+The installer offers to create the **A2Pod** shortcut automatically — just tap **"Add Shortcut"** when the Shortcuts app opens.
+
+If you skipped it or want to set it up manually:
 
 1. Open **Shortcuts** app (Mac or iPhone)
 2. Tap **+** to create a new shortcut
@@ -143,7 +147,8 @@ a2pod/
 │   ├── tts.py              # MLX Audio TTS wrapper
 │   └── assembler.py        # Audio concat + M4B packaging
 ├── config/
-│   └── com.a2pod.queue.plist  # launchd config
+│   ├── com.a2pod.queue.plist  # launchd config
+│   └── A2Pod.plist            # Share Sheet shortcut template
 ├── queue-processor.sh      # Background queue runner
 └── README.md
 ```

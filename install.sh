@@ -123,18 +123,36 @@ else
   fi
 fi
 
+# ─── Share Sheet shortcut ─────────────────────────────────────────────────────
+
 echo ""
-echo "📌 Create Share Sheet shortcut (one-time):"
-echo ""
-echo "  1. Open Shortcuts app"
-echo "  2. New shortcut → name: 'A2Pod'"
-echo "  3. Set 'Receive input from' → URLs + Share Sheet"
-echo "  4. Add action: Run Shell Script"
-echo "  5. Paste:"
-echo ""
-echo "     echo \"\$(cat)\" >> \"\$HOME/Library/Mobile Documents/com~apple~CloudDocs/A2Pod/queue.txt\""
-echo ""
-echo "  Done. Now share any link → A2Pod."
+if shortcuts list 2>/dev/null | grep -qx "A2Pod"; then
+  echo "✅ A2Pod shortcut already installed"
+else
+  echo "📌 Install 'A2Pod' Share Sheet shortcut?"
+  echo "   (Share any URL → auto-queue for audio conversion)"
+  read -p "   (y/n): " add_shortcut
+  if [[ "$add_shortcut" =~ ^[Yy]$ ]]; then
+    UNSIGNED=$(mktemp /tmp/a2a-unsigned.XXXXX)
+    SIGNED=$(mktemp /tmp/a2a-signed.XXXXX.shortcut)
+    plutil -convert binary1 -o "$UNSIGNED" "$SCRIPT_DIR/config/A2Pod.plist"
+    shortcuts sign -m anyone -i "$UNSIGNED" -o "$SIGNED" 2>/dev/null
+    open "$SIGNED"
+    rm -f "$UNSIGNED"
+    echo "   ⏳ Shortcuts app will open — tap 'Add Shortcut' to confirm."
+    echo "   (temp file auto-cleaned on next reboot)"
+  else
+    echo ""
+    echo "   To create manually:"
+    echo "   1. Open Shortcuts app"
+    echo "   2. New shortcut → name: 'A2Pod'"
+    echo "   3. Set 'Receive input from' → URLs + Share Sheet"
+    echo "   4. Add action: Run Shell Script"
+    echo "   5. Paste:"
+    echo "      echo \"\$(cat)\" >> \"\$HOME/Library/Mobile Documents/com~apple~CloudDocs/A2Pod/queue.txt\""
+  fi
+fi
+
 echo ""
 echo "📌 Usage:"
 echo "  a2pod https://some-article.com"
