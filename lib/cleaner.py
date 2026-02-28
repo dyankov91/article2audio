@@ -45,6 +45,12 @@ def clean_for_audio(text: str) -> str:
     # Markdown horizontal rules
     text = re.sub(r"^[-*_]{3,}\s*$", "", text, flags=re.MULTILINE)
 
+    # Comparison operators (before HTML tag stripping which eats < and >)
+    text = re.sub(r"(?<!\w)>=\s*(\d)", r"at least \1", text)
+    text = re.sub(r"(?<!\w)<=\s*(\d)", r"at most \1", text)
+    text = re.sub(r"(?<!\w)>\s*(\d)", r"more than \1", text)
+    text = re.sub(r"(?<!\w)<\s*(\d)", r"less than \1", text)
+
     # HTML tags
     text = re.sub(r"<[^>]+>", "", text)
 
@@ -99,6 +105,53 @@ def clean_for_audio(text: str) -> str:
 
     # Blockquote markers
     text = re.sub(r"^>\s?", "", text, flags=re.MULTILINE)
+
+    # ── TTS pronunciation fixes ──────────────────────────────────────────────
+    # Symbols and abbreviations that TTS reads literally or awkwardly.
+
+    # Approximate: ~20 → around 20
+    text = re.sub(r"~(\d)", r"around \1", text)
+
+    # Abbreviations: e.g. → for example, i.e. → that is, etc.
+    text = re.sub(r"\be\.g\.\s*,?\s*", "for example, ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bi\.e\.\s*,?\s*", "that is, ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bvs\.?\s", "versus ", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bw/o\b", "without", text)
+    text = re.sub(r"\bw/(?=[a-zA-Z])", "with ", text)
+
+    # Multiplier: 10x → 10 times (digit followed by x at word boundary)
+    text = re.sub(r"(\d)x\b", r"\1 times", text)
+
+    # Slash as "or" between words: AI/ML → AI or ML, true/false → true or false
+    text = re.sub(r"\b([A-Za-z]+)/([A-Za-z]+)\b", r"\1 or \2", text)
+
+    # Ampersand: R&D → R and D, Q&A → Q and A
+    text = re.sub(r"&", " and ", text)
+
+    # Arrows: -> or → or => → (remove, or replace contextually)
+    text = re.sub(r"\s*[-=]>\s*", " to ", text)
+    text = re.sub(r"\s*→\s*", " to ", text)
+
+    # Hash as "number": #1 → number 1 (but not #hashtags)
+    text = re.sub(r"#(\d)", r"number \1", text)
+
+    # Money shorthand: $5M → 5 million dollars, $2B → 2 billion dollars
+    text = re.sub(r"\$(\d+(?:\.\d+)?)\s*[Bb]\b", r"\1 billion dollars", text)
+    text = re.sub(r"\$(\d+(?:\.\d+)?)\s*[Mm]\b", r"\1 million dollars", text)
+    text = re.sub(r"\$(\d+(?:\.\d+)?)\s*[Kk]\b", r"\1 thousand dollars", text)
+
+    # Large number shorthand (without dollar): 10K → 10 thousand
+    text = re.sub(r"(\d)\s*K\b", r"\1 thousand", text)
+    text = re.sub(r"(\d)\s*M\b", r"\1 million", text)
+    text = re.sub(r"(\d)\s*B\b", r"\1 billion", text)
+
+    # Plus sign between words/concepts: AI + ML → AI and ML
+    text = re.sub(r"\b(\w+)\s*\+\s*(\w+)\b", r"\1 and \2", text)
+
+    # Equals sign: = → equals (between words/numbers)
+    text = re.sub(r"\s*=\s*", " equals ", text)
+
+    # ── End TTS fixes ────────────────────────────────────────────────────────
 
     # Replace self-referential article language with audio-appropriate terms
     def _replace_preserving_case(pattern, replacement, text):

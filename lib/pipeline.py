@@ -114,9 +114,10 @@ def run_pipeline(
     # Upload to S3 and update podcast feed
     if will_upload:
         progress("Publishing to podcast feed...")
-        upload_audiobook(output_path, resolved_title, source_url, summary, vtt_path)
+        audio_url = upload_audiobook(output_path, resolved_title, source_url, summary, vtt_path)
         feed_url = get_feed_url()
         result["feed_url"] = feed_url
+        result["audio_url"] = audio_url
         progress(f"Published. Feed: {feed_url}")
 
     progress("Done.")

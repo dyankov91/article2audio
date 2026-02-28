@@ -12,10 +12,21 @@ from telegram.ext import Application, CommandHandler, MessageHandler, ContextTyp
 
 from errors import PipelineError
 from pipeline import run_pipeline
+from publisher import get_feed_url
 
 _CONFIG_PATH = Path.home() / ".config" / "a2pod" / "config"
 
 logger = logging.getLogger(__name__)
+
+# Map pipeline progress messages to short user-facing status lines.
+# Only messages matching a key here produce a status update in Telegram.
+_STATUS_MAP = {
+    "Fetching article...": "Fetching article...",
+    "Extracting text from file...": "Extracting text...",
+    "Cleaning text...": "Cleaning text...",
+    "Encoding M4A...": "Encoding audio...",
+    "Publishing to podcast feed...": "Publishing...",
+}
 
 
 def load_telegram_config() -> tuple[str, set[int]]:
@@ -65,9 +76,9 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update.effective_user.id, allowed):
         return await _reject_unauthorized(update)
     await update.message.reply_text(
-        "Welcome to A2Pod!\n\n"
-        "Send me an article URL and I'll convert it to audio.\n"
-        "Use /help for more info."
+        "Send me an article URL and I'll convert it to audio for the podcast feed.\n\n"
+        "/feed — get the podcast feed URL\n"
+        "/help — more info"
     )
 
 
@@ -77,22 +88,48 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return await _reject_unauthorized(update)
     await update.message.reply_text(
         "Send me any article URL and I'll:\n"
-        "1. Extract the text\n"
-        "2. Clean it for audio\n"
-        "3. Generate speech with Kokoro TTS\n"
-        "4. Send you the audio file\n\n"
-        "Supported: regular web articles, X/Twitter posts and articles."
+        "1. Extract and clean the text\n"
+        "2. Generate speech with Kokoro TTS\n"
+        "3. Publish to the podcast feed\n\n"
+        "Supported: web articles, X/Twitter posts and articles.\n\n"
+        "/feed — get the podcast feed URL"
     )
 
 
+async def _feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed = context.bot_data["allowed_users"]
+    if not _is_authorized(update.effective_user.id, allowed):
+        return await _reject_unauthorized(update)
+    feed_url = get_feed_url()
+    if feed_url:
+        await update.message.reply_text(feed_url)
+    else:
+        await update.message.reply_text("Podcast feed not configured. Set up AWS in install.sh first.")
+
+
 def _run_pipeline_sync(url: str, loop: asyncio.AbstractEventLoop, chat_id: int,
-                        status_message_id: int, bot, progress_lines: list[str]) -> dict:
+                        status_message_id: int, bot, status_lines: list[str]) -> dict:
     """Run the sync pipeline in a thread, bridging progress back to async."""
 
     def on_progress(msg: str) -> None:
-        progress_lines.append(msg)
-        text = "\n".join(progress_lines)
-        # Fire-and-forget edit of the status message
+        # Check for TTS chunk progress
+        chunk_match = re.match(r"Generating audio \[(\d+)/(\d+)\]", msg)
+        if chunk_match:
+            i, total = chunk_match.group(1), chunk_match.group(2)
+            tts_line = f"Generating audio [{i}/{total}]..."
+            # Replace existing TTS line or append
+            for idx, line in enumerate(status_lines):
+                if line.startswith("Generating audio"):
+                    status_lines[idx] = tts_line
+                    break
+            else:
+                status_lines.append(tts_line)
+        elif msg in _STATUS_MAP:
+            status_lines.append(_STATUS_MAP[msg])
+        else:
+            return  # skip noisy messages
+
+        text = "\n".join(status_lines)
         asyncio.run_coroutine_threadsafe(
             bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=text),
             loop,
@@ -129,8 +166,8 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     logger.info("Job started for @%s: %s", username, url)
 
     # Send initial status message
-    progress_lines = ["Starting pipeline..."]
-    status_msg = await update.message.reply_text(progress_lines[0])
+    status_lines = ["Starting..."]
+    status_msg = await update.message.reply_text(status_lines[0])
 
     loop = asyncio.get_running_loop()
 
@@ -144,30 +181,30 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 chat_id=update.effective_chat.id,
                 status_message_id=status_msg.message_id,
                 bot=context.bot,
-                progress_lines=progress_lines,
+                status_lines=status_lines,
             ),
         )
 
         title = result["title"]
         size_mb = result["size_mb"]
         summary = result.get("summary") or ""
+        audio_url = result.get("audio_url")
 
-        msg = f"*{title}*"
+        lines = [f"*{title}*"]
         if summary:
-            msg += f"\n\n{summary}"
-        msg += f"\n\n_{size_mb:.1f} MB_"
-        if result.get("feed_url"):
-            msg += f" · [Podcast feed]({result['feed_url']})"
+            lines.append(f"\n{summary}")
+        if audio_url:
+            lines.append(f"\n[Listen]({audio_url})")
 
-        await update.message.reply_text(msg, parse_mode="Markdown")
+        await status_msg.edit_text("\n".join(lines), parse_mode="Markdown")
         logger.info("Job done for @%s: %s (%.1f MB)", username, title, size_mb)
 
     except PipelineError as e:
         logger.error("Pipeline error for @%s on %s: %s", username, url, e)
-        await update.message.reply_text(f"Error: {e}")
+        await status_msg.edit_text(f"Error: {e}")
     except Exception:
         logger.exception("Unexpected error for @%s on %s", username, url)
-        await update.message.reply_text("An unexpected error occurred. Check the bot logs for details.")
+        await status_msg.edit_text("An unexpected error occurred. Check the bot logs.")
     finally:
         active_jobs.discard(user_id)
 
@@ -189,6 +226,7 @@ def run_bot() -> None:
 
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("help", _help))
+    app.add_handler(CommandHandler("feed", _feed))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_url))
 
     logger.info("Bot started (allowed users: %s)", allowed)
