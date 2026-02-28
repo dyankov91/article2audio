@@ -58,7 +58,7 @@ fi
 # Python packages
 echo "📦 Installing Python packages..."
 pip3 install --upgrade pip --quiet
-pip3 install mlx-audio trafilatura soundfile --quiet
+pip3 install mlx-audio trafilatura soundfile "misaki[en]" phonemizer espeakng_loader --quiet
 
 # Pre-download Kokoro model
 echo "🧠 Downloading Kokoro TTS model (~160MB)..."
@@ -103,9 +103,26 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "✅ Setup complete!"
 echo ""
-echo "📌 Add to PATH (paste this):"
-echo ""
-echo "  echo 'export PATH=\"$SCRIPT_DIR/bin:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
+# ─── PATH setup ──────────────────────────────────────────────────────────────
+
+if echo "$PATH" | tr ':' '\n' | grep -qx "$SCRIPT_DIR/bin"; then
+  echo "✅ $SCRIPT_DIR/bin is already in PATH"
+elif grep -q "$SCRIPT_DIR/bin" ~/.zshrc 2>/dev/null; then
+  echo "✅ $SCRIPT_DIR/bin is already in ~/.zshrc (restart shell or run: source ~/.zshrc)"
+else
+  echo "📌 Add $SCRIPT_DIR/bin to PATH?"
+  read -p "   (y/n): " add_path
+  if [[ "$add_path" =~ ^[Yy]$ ]]; then
+    echo "export PATH=\"$SCRIPT_DIR/bin:\$PATH\"" >> ~/.zshrc
+    export PATH="$SCRIPT_DIR/bin:$PATH"
+    echo "✅ Added to ~/.zshrc and current session"
+  else
+    echo ""
+    echo "   To add later, run:"
+    echo "   echo 'export PATH=\"$SCRIPT_DIR/bin:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
+  fi
+fi
+
 echo ""
 echo "📌 Create Share Sheet shortcut (one-time):"
 echo ""
