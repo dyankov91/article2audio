@@ -124,50 +124,131 @@ with open(path, 'w') as f:
   fi
 fi
 
-# ─── Optional: Ollama for episode summaries ──────────────────────────────────
+# ─── LLM Provider for summaries and text cleaning ────────────────────────────
 
 echo ""
-echo "📝 Optional: Enable AI episode summaries via Ollama?"
-echo "   Generates 2-3 sentence descriptions for each episode in the podcast feed."
+echo "📝 LLM Provider for summaries and text cleaning:"
+echo "   Generates episode descriptions and cleans text before TTS."
 echo ""
+echo "   1) Ollama (local, free, requires ~2GB disk)"
+echo "   2) OpenAI API (cloud, requires API key)"
+echo "   3) Anthropic API (cloud, requires API key)"
+echo "   4) Skip (summaries will use fallback)"
+echo ""
+read -p "   Choose (1-4) [1]: " llm_choice
+llm_choice="${llm_choice:-1}"
 
-if command -v ollama &>/dev/null; then
-  echo "✅ Ollama is installed"
-  # Check if default model is available
-  if ollama list 2>/dev/null | grep -q "llama3.2"; then
-    echo "✅ llama3.2 model is available"
-  else
-    read -p "   Pull llama3.2 model (~2GB)? (y/n): " pull_model
-    if [[ "$pull_model" =~ ^[Yy]$ ]]; then
-      # Ensure server is running
-      if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+case "$llm_choice" in
+  1)
+    # Ollama setup
+    if command -v ollama &>/dev/null; then
+      echo "✅ Ollama is installed"
+      if ollama list 2>/dev/null | grep -q "llama3.2"; then
+        echo "✅ llama3.2 model is available"
+      else
+        read -p "   Pull llama3.2 model (~2GB)? (y/n): " pull_model
+        if [[ "$pull_model" =~ ^[Yy]$ ]]; then
+          if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+            echo "   Starting Ollama server..."
+            brew services start ollama
+            sleep 2
+          fi
+          echo "   Downloading llama3.2..."
+          ollama pull llama3.2
+          echo "   ✅ Model ready"
+        else
+          echo "   Skipped. Use --no-summary or pull a model later: ollama pull llama3.2"
+        fi
+      fi
+    else
+      read -p "   Install Ollama? (y/n): " install_ollama
+      if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
+        echo "   Installing Ollama..."
+        brew install ollama
         echo "   Starting Ollama server..."
         brew services start ollama
         sleep 2
+        echo "   Pulling llama3.2 model (~2GB)..."
+        ollama pull llama3.2
+        echo "   ✅ Ollama ready (running as background service)"
+      else
+        echo "   Skipped. Summaries will use fallback (first sentence)."
+        echo "   Install later: brew install ollama && ollama pull llama3.2"
       fi
-      echo "   Downloading llama3.2..."
-      ollama pull llama3.2
-      echo "   ✅ Model ready"
-    else
-      echo "   Skipped. Use --no-summary or pull a model later: ollama pull llama3.2"
     fi
-  fi
-else
-  read -p "   Install Ollama? (y/n): " install_ollama
-  if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
-    echo "   Installing Ollama..."
-    brew install ollama
-    echo "   Starting Ollama server..."
-    brew services start ollama
-    sleep 2
-    echo "   Pulling llama3.2 model (~2GB)..."
-    ollama pull llama3.2
-    echo "   ✅ Ollama ready (running as background service)"
-  else
+
+    # Write [llm] section to config
+    mkdir -p "$CONFIG_DIR"
+    python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('llm'):
+    cfg.add_section('llm')
+cfg.set('llm', 'provider', 'ollama')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
+    ;;
+  2)
+    # OpenAI setup
+    echo ""
+    read -s -p "   OpenAI API key: " OPENAI_KEY
+    echo ""
+
+    echo "   Installing openai package..."
+    pip3 install openai --quiet
+
+    mkdir -p "$CONFIG_DIR"
+    python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('llm'):
+    cfg.add_section('llm')
+cfg.set('llm', 'provider', 'openai')
+cfg.set('llm', 'api_key', '$OPENAI_KEY')
+cfg.set('llm', 'model', 'gpt-4o-mini')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
+    echo "   ✅ OpenAI configured (model: gpt-4o-mini)"
+    ;;
+  3)
+    # Anthropic setup
+    echo ""
+    read -s -p "   Anthropic API key: " ANTHROPIC_KEY
+    echo ""
+
+    echo "   Installing anthropic package..."
+    pip3 install anthropic --quiet
+
+    mkdir -p "$CONFIG_DIR"
+    python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('llm'):
+    cfg.add_section('llm')
+cfg.set('llm', 'provider', 'anthropic')
+cfg.set('llm', 'api_key', '$ANTHROPIC_KEY')
+cfg.set('llm', 'model', 'claude-haiku-4-20250414')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
+    echo "   ✅ Anthropic configured (model: claude-haiku-4-20250414)"
+    ;;
+  4)
     echo "   Skipped. Summaries will use fallback (first sentence)."
-    echo "   Install later: brew install ollama && ollama pull llama3.2"
-  fi
-fi
+    echo "   Configure later in ~/.config/a2pod/config under [llm]."
+    ;;
+  *)
+    echo "   Invalid choice. Skipping LLM setup."
+    ;;
+esac
 
 # ─── Optional: AWS / Podcast sync ────────────────────────────────────────────
 

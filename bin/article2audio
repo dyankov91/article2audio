@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 from errors import PipelineError
 from pipeline import run_pipeline
 from tts import DEFAULT_VOICE, DEFAULT_SPEED
-from summarizer import DEFAULT_MODEL
+from llm import DEFAULT_MODEL
 from publisher import is_aws_configured, find_episode, delete_episode, delete_all_episodes, list_episodes
 
 
@@ -50,7 +50,7 @@ def main():
                         help="Skip S3 upload and podcast feed update")
     parser.add_argument("--output", "-o", help="Custom output path")
     parser.add_argument("--model", "-m", default=DEFAULT_MODEL,
-                        help=f"Ollama model for summaries (default: {DEFAULT_MODEL})")
+                        help=f"LLM model (default: {DEFAULT_MODEL}, based on configured provider)")
     parser.add_argument("--no-summary", action="store_true",
                         help="Skip episode summary generation")
     parser.add_argument("--force", action="store_true",

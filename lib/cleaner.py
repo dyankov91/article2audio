@@ -1,17 +1,14 @@
 """Text cleaning for audio output.
 
 Two-pass cleaning: regex heuristics first (fast, deterministic), then an
-optional LLM pass via Ollama to catch subtle patterns the regex missed.
+optional LLM pass to catch subtle patterns the regex missed.
 """
 
-import json
 import re
-import urllib.request
-import urllib.error
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
+from llm import generate, strip_preamble, DEFAULT_MODEL
+
 LLM_CHUNK_SIZE = 4000
-LLM_TIMEOUT = 60
 
 
 def clean_for_audio(text: str) -> str:
@@ -205,43 +202,23 @@ Text to clean:
 
 
 def _llm_clean_chunk(text: str, model: str) -> str | None:
-    """Send a chunk to Ollama for cleaning. Returns None on failure."""
-    payload = json.dumps({
-        "model": model,
-        "prompt": _LLM_CLEAN_PROMPT + text,
-        "stream": False,
-        "options": {
-            "temperature": 0.1,
-            "num_predict": len(text) + 500,
-        },
-    }).encode("utf-8")
-
-    req = urllib.request.Request(
-        OLLAMA_URL,
-        data=payload,
-        headers={"Content-Type": "application/json"},
+    """Send a chunk to the LLM for cleaning. Returns None on failure."""
+    result = generate(
+        _LLM_CLEAN_PROMPT + text,
+        temperature=0.1,
+        max_tokens=len(text) + 500,
+        model=model,
     )
-    try:
-        with urllib.request.urlopen(req, timeout=LLM_TIMEOUT) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            result = data.get("response", "").strip()
-            if not result:
-                return None
-            # Strip LLM preamble ("Here is the cleaned text:", etc.)
-            result = re.sub(
-                r"^(here\s*(is|'s)\s*(the\s*)?(cleaned?|edited|updated|revised|modified|final)\s*(version\s*(of\s*)?(the\s*)?)?text\s*[:\-—]\s*\n*)",
-                "", result, count=1, flags=re.IGNORECASE,
-            )
-            result = result.strip()
-            # Guard against the LLM drastically shortening content
-            if len(result) < len(text) * 0.5:
-                return None
-            return result
-    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+    if not result:
         return None
+    result = strip_preamble(result)
+    # Guard against the LLM drastically shortening content
+    if len(result) < len(text) * 0.5:
+        return None
+    return result
 
 
-def llm_clean_for_audio(text: str, model: str = "llama3.2") -> str:
+def llm_clean_for_audio(text: str, model: str = DEFAULT_MODEL) -> str:
     """LLM final pass to catch what regex missed. Returns input unchanged on failure."""
     paragraphs = text.split("\n\n")
     chunks = []

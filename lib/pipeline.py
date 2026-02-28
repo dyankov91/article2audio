@@ -9,7 +9,8 @@ from typing import Callable
 
 from extractor import extract_from_url, extract_from_file, is_x_url
 from cleaner import clean_for_audio, llm_clean_for_audio
-from summarizer import get_summary, DEFAULT_MODEL
+from summarizer import get_summary
+from llm import DEFAULT_MODEL
 from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED
 from assembler import concat_to_m4b, build_transcript_vtt

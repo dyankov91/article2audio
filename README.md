@@ -6,7 +6,7 @@ Convert any article URL into an audiobook on Apple Silicon. Generates audio loca
 
 - **Any URL** — articles, blog posts, newsletters, X/Twitter posts and articles
 - **Text cleaning** — automatically strips URLs, markdown, code blocks, CTAs, and web artifacts before TTS
-- **Episode summaries** — generates 2-3 sentence descriptions via Ollama (optional, graceful fallback)
+- **Episode summaries** — generates 2-3 sentence descriptions via Ollama, OpenAI, or Anthropic (optional, graceful fallback)
 - **Apple Silicon TTS** — Kokoro model via MLX, fast and natural-sounding
 - **Podcast feed** — uploads to S3 and updates an RSS feed, subscribe once in Apple Podcasts
 - **Telegram bot** — send a URL to your bot, get audio back in chat with live progress updates
@@ -19,7 +19,7 @@ Convert any article URL into an audiobook on Apple Silicon. Generates audio loca
 - ~500MB disk for model + dependencies
 - X API bearer token (optional, for X/Twitter posts)
 - AWS account (optional, for podcast sync)
-- [Ollama](https://ollama.com) (optional, for episode summaries)
+- LLM provider (optional, for summaries and text cleaning): [Ollama](https://ollama.com) (local), [OpenAI API](https://platform.openai.com), or [Anthropic API](https://console.anthropic.com)
 
 ## Quick Start
 
@@ -61,7 +61,7 @@ a2pod https://example.com/article --output ~/Desktop/article.m4b
 # Skip summary generation
 a2pod https://example.com/article --no-summary
 
-# Use a different Ollama model for summaries
+# Use a different model for summaries
 a2pod https://example.com/article --model mistral
 ```
 
@@ -167,21 +167,49 @@ tail -f ~/.config/a2pod/bot.log
 a2pod-bot
 ```
 
-## Episode Summaries
+## LLM Provider
 
-Summaries are generated automatically via a local Ollama model and added to the podcast feed as episode descriptions (visible in Apple Podcasts).
+An LLM is used for episode summaries and text cleaning. Choose a provider during `./install.sh` or configure manually in `~/.config/a2pod/config`:
 
-To set up:
+**Ollama (local, free):**
 
-```bash
-# Install Ollama
-brew install ollama
-
-# Pull a model (default: llama3.2)
-ollama pull llama3.2
+```ini
+[llm]
+provider = ollama
+model = llama3.2
 ```
 
-If Ollama isn't running, a fallback summary (first sentence of the article) is used instead. Use `--no-summary` to skip entirely, or `--model <name>` to use a different model.
+```bash
+brew install ollama && ollama pull llama3.2
+```
+
+**OpenAI:**
+
+```ini
+[llm]
+provider = openai
+api_key = sk-...
+model = gpt-4o-mini
+```
+
+```bash
+pip3 install openai
+```
+
+**Anthropic:**
+
+```ini
+[llm]
+provider = anthropic
+api_key = sk-ant-...
+model = claude-haiku-4-20250414
+```
+
+```bash
+pip3 install anthropic
+```
+
+If no provider is configured, Ollama is used by default. If the LLM is unavailable, summaries fall back to first-sentence extraction and text cleaning uses regex only. Use `--no-summary` to skip summaries entirely, or `--model <name>` to override the model.
 
 ## Podcast Setup
 
@@ -228,7 +256,7 @@ URL → Scrape → Clean → Summarize → Chunk → TTS → M4A → S3 → Podc
 
 1. **Scrape** — trafilatura extracts article text; X API v2 handles X/Twitter posts
 2. **Clean** — regex strips URLs, markdown, code blocks, CTAs, and web artifacts
-3. **Summarize** — Ollama generates a 2-3 sentence episode description (optional)
+3. **Summarize** — LLM generates a 2-3 sentence episode description (optional)
 4. **Chunk** — splits into ~2000 char segments at sentence boundaries
 5. **TTS** — Kokoro-82M generates audio locally on Apple Silicon
 6. **Assemble** — ffmpeg concatenates chunks into M4A with metadata
@@ -247,7 +275,8 @@ a2pod/
 │   ├── pipeline.py         # Orchestration (used by CLI and bot)
 │   ├── extractor.py        # URL/file text extraction
 │   ├── cleaner.py          # Regex + LLM text cleaning for audio
-│   ├── summarizer.py       # Ollama episode summaries
+│   ├── llm.py              # LLM abstraction (Ollama/OpenAI/Anthropic)
+│   ├── summarizer.py       # LLM episode summaries
 │   ├── chunker.py          # Text splitting
 │   ├── tts.py              # MLX Audio TTS wrapper
 │   ├── assembler.py        # Audio concat + M4A packaging
