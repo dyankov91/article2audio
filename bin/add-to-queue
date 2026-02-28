@@ -1,0 +1,14 @@
+#!/bin/bash
+# Adds a URL to the A2Pod processing queue.
+# Queue file lives in iCloud Drive and syncs across devices.
+
+URL="$1"
+if [ -z "$URL" ]; then
+  echo "Usage: add-to-queue <url>"
+  exit 1
+fi
+
+QUEUE_FILE="$HOME/Library/Mobile Documents/com~apple~CloudDocs/A2Pod/queue.txt"
+mkdir -p "$(dirname "$QUEUE_FILE")"
+echo "$URL" >> "$QUEUE_FILE"
+echo "✅ Queued: $URL"

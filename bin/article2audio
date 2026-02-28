@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""
+a2pod — Convert any article URL to an audiobook in Apple Books.
+
+Usage:
+    a2pod <url> [--voice VOICE] [--speed SPEED] [--no-import]
+    a2pod --file <path> [--title TITLE] [--voice VOICE] [--speed SPEED]
+"""
+
+import argparse
+import os
+import re
+import sys
+import tempfile
+import textwrap
+from pathlib import Path
+
+# Add lib to path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+from extractor import extract_from_url, extract_from_file
+from chunker import chunk_text
+from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED
+from assembler import concat_to_m4b, import_to_books
+
+OUTPUT_DIR = Path.home() / "A2Pod"
+
+
+def sanitize_filename(title: str) -> str:
+    """Create a safe filename from title."""
+    clean = re.sub(r"[^\w\s-]", "", title)
+    clean = re.sub(r"\s+", "_", clean.strip())
+    return clean[:80] or "article"
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Convert articles to audiobooks for Apple Books",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent("""\
+            Examples:
+              a2pod https://example.com/article
+              a2pod https://example.com/article --voice am_michael
+              a2pod --file article.txt --title "My Article"
+        """),
+    )
+    parser.add_argument("url", nargs="?", help="Article URL to convert")
+    parser.add_argument("--file", "-f", help="Local text file instead of URL")
+    parser.add_argument("--title", "-t", help="Override article title")
+    parser.add_argument("--voice", "-v", default=DEFAULT_VOICE,
+                        help=f"TTS voice (default: {DEFAULT_VOICE})")
+    parser.add_argument("--speed", "-s", type=float, default=DEFAULT_SPEED,
+                        help=f"Speech speed (default: {DEFAULT_SPEED})")
+    parser.add_argument("--no-import", action="store_true",
+                        help="Don't auto-import to Apple Books")
+    parser.add_argument("--output", "-o", help="Custom output path")
+
+    args = parser.parse_args()
+
+    if not args.url and not args.file:
+        parser.print_help()
+        sys.exit(1)
+
+    # Extract text
+    if args.file:
+        text = extract_from_file(args.file)
+        title = args.title or Path(args.file).stem
+    else:
+        print(f"📰 Fetching article: {args.url}")
+        text, auto_title = extract_from_url(args.url)
+        title = args.title or auto_title or "Untitled Article"
+
+    word_count = len(text.split())
+    print(f'📝 "{title}" — {word_count} words')
+
+    # Chunk text
+    chunks = chunk_text(text)
+    print(f"🔪 Split into {len(chunks)} chunks")
+
+    est_minutes = word_count / 150
+    print(f"⏱️  Estimated audio: {est_minutes:.0f} min")
+
+    # Generate audio
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wav_files = generate_audio_chunks(chunks, args.voice, args.speed, tmpdir)
+
+        OUTPUT_DIR.mkdir(exist_ok=True)
+        filename = sanitize_filename(title)
+        output_path = args.output or str(OUTPUT_DIR / f"{filename}.m4b")
+
+        print("🔨 Building audiobook...")
+        concat_to_m4b(wav_files, output_path, title)
+
+    if not args.no_import:
+        import_to_books(output_path)
+
+    size_mb = os.path.getsize(output_path) / (1024 * 1024)
+    print(f"\n✅ Done! {size_mb:.1f} MB audiobook ready.")
+
+
+if __name__ == "__main__":
+    main()
