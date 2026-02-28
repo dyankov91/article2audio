@@ -140,8 +140,18 @@ else
     rm -f "$UNSIGNED"
     open "$SIGNED"
     echo "   ⏳ Shortcuts app will open — tap 'Add Shortcut' to confirm."
-    echo "   ⚠️  If you see 'scripting actions are disabled', click 'Open Preferences'"
-    echo "      and enable 'Allow Running Scripts' (one-time macOS security setting)."
+    echo ""
+    echo "   ⚠️  Two one-time permissions needed:"
+    echo "   1. In Shortcuts → Settings → Advanced → enable 'Allow Running Scripts'"
+    echo "   2. Grant Full Disk Access to allow writing to iCloud Drive:"
+    read -p "      Open Privacy settings now? (y/n): " open_privacy
+    if [[ "$open_privacy" =~ ^[Yy]$ ]]; then
+      open "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+      echo "      → Add 'Background Shortcut Runner' (or 'Shortcuts') to Full Disk Access"
+    else
+      echo "      → System Settings → Privacy & Security → Full Disk Access"
+      echo "      → Add 'Background Shortcut Runner' (or 'Shortcuts')"
+    fi
   else
     echo ""
     echo "   To create manually:"

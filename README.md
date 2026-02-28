@@ -92,7 +92,11 @@ Bird auto-detects cookies from Safari/Chrome/Firefox. If it can't find them, log
 
 The installer offers to create the **A2Pod** shortcut automatically — just tap **"Add Shortcut"** when the Shortcuts app opens.
 
-If you skipped it or want to set it up manually:
+**Required permissions** (one-time):
+1. Shortcuts → Settings → Advanced → enable **"Allow Running Scripts"**
+2. System Settings → Privacy & Security → **Full Disk Access** → add **Shortcuts** (needed to write to iCloud Drive)
+
+If you skipped the installer or want to set it up manually:
 
 1. Open **Shortcuts** app (Mac or iPhone)
 2. Tap **+** to create a new shortcut
