@@ -34,6 +34,17 @@
 				<string>/bin/bash</string>
 			</dict>
 		</dict>
+		<dict>
+			<key>WFWorkflowActionIdentifier</key>
+			<string>is.workflow.actions.notification</string>
+			<key>WFWorkflowActionParameters</key>
+			<dict>
+				<key>WFNotificationActionTitle</key>
+				<string>A2Pod</string>
+				<key>WFNotificationActionBody</key>
+				<string>Queued for audio conversion</string>
+			</dict>
+		</dict>
 	</array>
 </dict>
 </plist>
