@@ -20,7 +20,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 
 from extractor import extract_from_url, extract_from_file
-from cleaner import clean_for_audio
+from cleaner import clean_for_audio, llm_clean_for_audio
 from summarizer import get_summary, DEFAULT_MODEL
 from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED
@@ -88,9 +88,12 @@ def main():
         title = args.title or auto_title or "Untitled Article"
         print(" done")
 
-    # Clean text for audio
+    # Clean text for audio (regex pass + LLM final pass)
     print(f"  Cleaning text for audio...", end="", flush=True)
     text = clean_for_audio(text)
+    print(" done")
+    print(f"  LLM cleaning pass ({args.model})...", end="", flush=True)
+    text = llm_clean_for_audio(text, args.model)
     print(" done")
 
     # Generate episode summary

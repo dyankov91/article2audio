@@ -6,6 +6,7 @@ Uses urllib only (no external dependencies).
 """
 
 import json
+import re
 import urllib.request
 import urllib.error
 
@@ -34,8 +35,10 @@ def summarize(text: str, title: str = "", model: str = DEFAULT_MODEL) -> str | N
     """Generate a summary via Ollama. Returns None on any failure."""
     truncated = text[:MAX_INPUT_CHARS]
     prompt = (
-        f"Summarize this article in 2-3 sentences for a podcast episode description. "
-        f"Be concise and informative. Do not start with 'This article' or 'The article'.\n\n"
+        f"Write a 2-3 sentence summary of the following text for a podcast episode description. "
+        f"Output ONLY the summary sentences — no preamble, no labels, no introductory phrases. "
+        f"Do not start with 'This article', 'The article', 'This episode', or 'Here is'. "
+        f"Jump straight into the content.\n\n"
         f"Title: {title}\n\n"
         f"{truncated}"
     )
@@ -58,6 +61,13 @@ def summarize(text: str, title: str = "", model: str = DEFAULT_MODEL) -> str | N
         with urllib.request.urlopen(req, timeout=TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             summary = data.get("response", "").strip()
+            if summary:
+                # Strip LLM preamble like "Here's a summary:" or "Here is the summary:"
+                summary = re.sub(
+                    r"^(here('s| is)( a| the)?( podcast)?( episode)?( description)?( summary)?[^.:\n]*[:.\n]\s*)",
+                    "", summary, flags=re.IGNORECASE,
+                )
+                summary = summary.strip()
             if summary:
                 # Truncate to 4000 chars (iTunes limit)
                 return summary[:4000]
