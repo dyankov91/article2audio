@@ -191,7 +191,7 @@ def upload_audiobook(local_path: str, title: str, source_url: str | None = None,
     if transcript_path and os.path.exists(transcript_path):
         vtt_filename = os.path.basename(transcript_path)
         vtt_key = f"{AUDIOBOOKS_PREFIX}{vtt_filename}"
-        s3.upload_file(transcript_path, bucket, vtt_key, ExtraArgs={"ContentType": "text/vtt"})
+        s3.upload_file(transcript_path, bucket, vtt_key, ExtraArgs={"ContentType": "text/vtt; charset=utf-8"})
         transcript_url = f"{base_url}/{vtt_key}"
 
     # Fetch or create feed, add item, re-upload
