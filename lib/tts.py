@@ -1,5 +1,6 @@
 """TTS generation using MLX Audio (Kokoro)."""
 
+import configparser
 import logging
 import os
 import warnings
@@ -11,9 +12,20 @@ import numpy as np
 MODEL = "mlx-community/Kokoro-82M-bf16"
 DEFAULT_VOICE = "af_heart"
 DEFAULT_SPEED = 1.0
-DEFAULT_WORKERS = 2
 LANG_CODE = "a"  # English
 SAMPLE_RATE = 24000
+
+_CONFIG_PATH = os.path.expanduser("~/.config/a2pod/config")
+
+
+def _load_tts_config() -> int:
+    """Read [tts] from config. Returns workers count."""
+    cfg = configparser.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+    return cfg.getint("tts", "workers", fallback=2)
+
+
+DEFAULT_WORKERS = _load_tts_config()
 
 
 def _default_progress(msg: str) -> None:
