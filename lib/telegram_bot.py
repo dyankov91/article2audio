@@ -22,7 +22,10 @@ from errors import PipelineError
 from llm import get_provider_info, get_available_providers, set_provider
 from pipeline import run_pipeline
 from publisher import get_feed_url, find_episode, list_episodes, delete_episode, delete_all_episodes
-from tts import get_voice_info, get_available_voices, set_voice, VOICES
+from tts import (
+    get_voice_info, get_available_voices, set_voice, VOICES,
+    get_workers, get_recommended_workers, set_workers, WORKER_OPTIONS,
+)
 
 _CONFIG_PATH = Path.home() / ".config" / "a2pod" / "config"
 _RESTART_MARKER = Path.home() / ".config" / "a2pod" / ".restart_chat_id"
@@ -121,6 +124,7 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "and I'll convert it to audio for the podcast feed.\n\n"
         "/model — show or switch LLM provider\n"
         "/voice — show or switch TTS voice\n"
+        "/workers — show or set TTS worker count\n"
         "/feed — get the podcast feed URL\n"
         "/status — bot status and debug info\n"
         "/delete <title or URL> — remove an episode\n"
@@ -145,6 +149,8 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/model <provider> <model> — switch provider and model\n"
         "/voice — show/switch TTS voice\n"
         "/voice <voice_id> — switch voice (e.g. af_heart, am_adam)\n"
+        "/workers — show/set TTS worker count\n"
+        "/workers <count> — set workers (1, 2, 3, 4, 6, or 8)\n"
         "/feed — get the podcast feed URL\n"
         "/status — bot status and debug info\n"
         "/delete <title or URL> — remove an episode\n"
@@ -253,6 +259,52 @@ async def _voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Error: {e}")
 
 
+async def _workers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show or set TTS worker count."""
+    allowed = context.bot_data["allowed_users"]
+    if not _is_authorized(update.effective_user.id, allowed):
+        return await _reject_unauthorized(update)
+
+    args = context.args
+
+    if not args:
+        current = get_workers()
+        recommended = get_recommended_workers()
+        cores = os.cpu_count() or 0
+
+        buttons = []
+        row = []
+        for w in WORKER_OPTIONS:
+            label = str(w)
+            if w == current:
+                label = f"* {label}"
+            if w == recommended:
+                label += " (rec)"
+            row.append(InlineKeyboardButton(label, callback_data=f"workers_{w}"))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        await update.message.reply_text(
+            f"TTS workers: *{current}* (recommended: {recommended} for {cores} cores)\n\n"
+            f"More workers = faster generation but higher memory/GPU usage.",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        count = int(args[0])
+        set_workers(count)
+        await update.message.reply_text(f"Workers set to *{count}*", parse_mode="Markdown")
+        logger.info("Workers set to %d by @%s", count,
+                     update.effective_user.username or update.effective_user.id)
+    except (ValueError, TypeError) as e:
+        await update.message.reply_text(f"Error: {e}")
+
+
 async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed = context.bot_data["allowed_users"]
     if not _is_authorized(update.effective_user.id, allowed):
@@ -287,6 +339,7 @@ async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Started: {started_str}",
         f"LLM: {provider} / {model}",
         f"Voice: {voice_name} ({voice_id})",
+        f"Workers: {get_workers()}",
         f"Active jobs: {len(active_jobs)}",
         f"Python: {platform.python_version()} ({platform.machine()})",
     ]
@@ -372,9 +425,10 @@ def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
         )
 
     voice_id, _ = get_voice_info()
+    workers = get_workers()
     return run_pipeline(
         url=url, file_path=file_path, text=text, title=title,
-        voice=voice_id, no_upload=False, on_progress=on_progress,
+        voice=voice_id, workers=workers, no_upload=False, on_progress=on_progress,
     )
 
 
@@ -710,6 +764,16 @@ async def _button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except ValueError as e:
             await query.edit_message_text(f"Error: {e}")
 
+    elif data.startswith("workers_"):
+        try:
+            count = int(data.removeprefix("workers_"))
+            set_workers(count)
+            await query.edit_message_text(f"Workers set to *{count}*", parse_mode="Markdown")
+            logger.info("Workers set to %d by @%s", count,
+                         query.from_user.username or query.from_user.id)
+        except (ValueError, TypeError) as e:
+            await query.edit_message_text(f"Error: {e}")
+
 
 def run_bot() -> None:
     """Start the Telegram bot with long-polling."""
@@ -728,6 +792,7 @@ def run_bot() -> None:
             ("start", "Start the bot"),
             ("model", "Show or switch LLM provider"),
             ("voice", "Show or switch TTS voice"),
+            ("workers", "Show or set TTS worker count"),
             ("feed", "Get the podcast feed URL"),
             ("status", "Bot status and debug info"),
             ("delete", "Remove an episode"),
@@ -757,6 +822,7 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("restart", _restart))
     app.add_handler(CommandHandler("model", _model))
     app.add_handler(CommandHandler("voice", _voice))
+    app.add_handler(CommandHandler("workers", _workers))
     app.add_handler(CallbackQueryHandler(_button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, _handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))

@@ -47,6 +47,42 @@ def _load_tts_config() -> tuple[int, str]:
 DEFAULT_WORKERS, _current_voice = _load_tts_config()
 
 
+WORKER_OPTIONS = [1, 2, 3, 4, 6, 8]
+
+
+def get_workers() -> int:
+    """Return the current worker count."""
+    return DEFAULT_WORKERS
+
+
+def get_recommended_workers() -> int:
+    """Return recommended worker count based on CPU cores."""
+    cores = os.cpu_count() or 2
+    return max(1, min(cores // 2, 4))
+
+
+def set_workers(count: int) -> int:
+    """Set the worker count. Returns the new count. Raises ValueError on invalid input."""
+    global DEFAULT_WORKERS
+    if count not in WORKER_OPTIONS:
+        raise ValueError(f"Invalid worker count: {count}. Choose from: {WORKER_OPTIONS}")
+    DEFAULT_WORKERS = count
+    _save_tts_config_workers(count)
+    return count
+
+
+def _save_tts_config_workers(workers: int) -> None:
+    """Persist worker count to config (preserves other keys)."""
+    cfg = configparser.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+    if not cfg.has_section("tts"):
+        cfg.add_section("tts")
+    cfg.set("tts", "workers", str(workers))
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w") as f:
+        cfg.write(f)
+
+
 def get_voice_info() -> tuple[str, str]:
     """Return (voice_id, model) for the active voice."""
     return _current_voice, MODEL
