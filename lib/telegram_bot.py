@@ -8,6 +8,7 @@ import platform
 import re
 import signal
 import subprocess
+import tempfile
 import time
 from functools import partial
 from pathlib import Path
@@ -46,6 +47,7 @@ _GIT_VERSION = _get_git_version()
 # Only messages matching a key here produce a status update in Telegram.
 _STATUS_MAP = {
     "Fetching article...": "Fetching article...",
+    "Processing text...": "Processing text...",
     "Extracting text from file...": "Extracting text...",
     "Cleaning text...": "Cleaning text...",
     "Text cleaned.": "Cleaning text [done]",
@@ -103,7 +105,8 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update.effective_user.id, allowed):
         return await _reject_unauthorized(update)
     await update.message.reply_text(
-        "Send me an article URL and I'll convert it to audio for the podcast feed.\n\n"
+        "Send me an article URL, upload a .txt file, or paste text "
+        "and I'll convert it to audio for the podcast feed.\n\n"
         "/model — show or switch LLM provider\n"
         "/voice — show or switch TTS voice\n"
         "/feed — get the podcast feed URL\n"
@@ -120,11 +123,11 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not _is_authorized(update.effective_user.id, allowed):
         return await _reject_unauthorized(update)
     await update.message.reply_text(
-        "Send me any article URL and I'll:\n"
+        "Send me any article URL, upload a .txt file, or paste text and I'll:\n"
         "1. Extract and clean the text\n"
         "2. Generate speech with Kokoro TTS\n"
         "3. Publish to the podcast feed\n\n"
-        "Supported: web articles, X/Twitter posts and articles.\n\n"
+        "Supported: web articles, X/Twitter posts, .txt files, pasted text.\n\n"
         "/model — show/switch LLM provider and model\n"
         "/model <provider> — switch provider (ollama, openai, anthropic)\n"
         "/model <provider> <model> — switch provider and model\n"
@@ -276,8 +279,30 @@ async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
-def _run_pipeline_sync(url: str, loop: asyncio.AbstractEventLoop, chat_id: int,
-                        status_message_id: int, bot, status_lines: list[str]) -> dict:
+def _format_result(result: dict, elapsed: float) -> str:
+    """Format a pipeline result dict into a Markdown message."""
+    cached = result.get("cached", False)
+    title = result["title"]
+    summary = result.get("summary") or ""
+    audio_url = result.get("audio_url")
+
+    lines = []
+    if cached:
+        lines.append("Already processed:")
+    lines.append(f"*{title}*")
+    if summary:
+        lines.append(f"\n{summary}")
+    if audio_url:
+        lines.append(f"\n[Listen]({audio_url})")
+    if not cached:
+        mins, secs = divmod(int(elapsed), 60)
+        lines.append(f"\n_Build time: {mins}m {secs}s_" if mins else f"\n_Build time: {secs}s_")
+    return "\n".join(lines)
+
+
+def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
+                        status_message_id: int, bot, status_lines: list[str],
+                        url=None, file_path=None, text=None, title=None) -> dict:
     """Run the sync pipeline in a thread, bridging progress back to async."""
 
     def on_progress(msg: str) -> None:
@@ -315,17 +340,20 @@ def _run_pipeline_sync(url: str, loop: asyncio.AbstractEventLoop, chat_id: int,
         else:
             return  # skip noisy messages
 
-        text = "\n".join(status_lines)
+        status_text = "\n".join(status_lines)
         asyncio.run_coroutine_threadsafe(
-            bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=text),
+            bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=status_text),
             loop,
         )
 
     voice_id, _ = get_voice_info()
-    return run_pipeline(url=url, voice=voice_id, no_upload=False, on_progress=on_progress)
+    return run_pipeline(
+        url=url, file_path=file_path, text=text, title=title,
+        voice=voice_id, no_upload=False, on_progress=on_progress,
+    )
 
 
-async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed = context.bot_data["allowed_users"]
     user_id = update.effective_user.id
     username = update.effective_user.username or str(user_id)
@@ -345,7 +373,23 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     # Extract URL from message
     url_match = re.search(r"https?://\S+", text)
     if not url_match:
-        await update.message.reply_text("Please send a valid URL starting with http:// or https://")
+        word_count = len(text.split())
+        if word_count < 50:
+            await update.message.reply_text(
+                "Send me a URL, upload a .txt file, or paste a longer text (50+ words) "
+                "to generate a podcast episode."
+            )
+            return
+        # Offer to generate from pasted text
+        context.user_data["pending_text"] = text
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("Yes", callback_data="text_yes"),
+            InlineKeyboardButton("No", callback_data="text_no"),
+        ]])
+        await update.message.reply_text(
+            f"Generate a podcast episode from this text ({word_count} words)?",
+            reply_markup=keyboard,
+        )
         return
 
     url = url_match.group(0)
@@ -364,38 +408,21 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             None,
             partial(
                 _run_pipeline_sync,
-                url=url,
                 loop=loop,
                 chat_id=update.effective_chat.id,
                 status_message_id=status_msg.message_id,
                 bot=context.bot,
                 status_lines=status_lines,
+                url=url,
             ),
         )
 
         elapsed = time.monotonic() - t0
-        title = result["title"]
-        summary = result.get("summary") or ""
-        audio_url = result.get("audio_url")
-        cached = result.get("cached", False)
-
-        lines = []
-        if cached:
-            lines.append("Already processed:")
-        lines.append(f"*{title}*")
-        if summary:
-            lines.append(f"\n{summary}")
-        if audio_url:
-            lines.append(f"\n[Listen]({audio_url})")
-        if not cached:
-            mins, secs = divmod(int(elapsed), 60)
-            lines.append(f"\n_Build time: {mins}m {secs}s_" if mins else f"\n_Build time: {secs}s_")
-
-        await status_msg.edit_text("\n".join(lines), parse_mode="Markdown")
-        if cached:
-            logger.info("Job done for @%s: %s (cached)", username, title)
+        await status_msg.edit_text(_format_result(result, elapsed), parse_mode="Markdown")
+        if result.get("cached"):
+            logger.info("Job done for @%s: %s (cached)", username, result["title"])
         else:
-            logger.info("Job done for @%s: %s (%.1f MB, %ds)", username, title, result["size_mb"], int(elapsed))
+            logger.info("Job done for @%s: %s (%.1f MB, %ds)", username, result["title"], result["size_mb"], int(elapsed))
 
     except PipelineError as e:
         logger.error("Pipeline error for @%s on %s: %s", username, url, e)
@@ -405,6 +432,82 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await status_msg.edit_text("An unexpected error occurred. Check the bot logs.")
     finally:
         active_jobs.discard(user_id)
+
+
+async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle uploaded .txt files — run them through the pipeline."""
+    allowed = context.bot_data["allowed_users"]
+    user_id = update.effective_user.id
+    username = update.effective_user.username or str(user_id)
+
+    if not _is_authorized(user_id, allowed):
+        logger.warning("Unauthorized access from @%s (id=%d)", username, user_id)
+        return await _reject_unauthorized(update)
+
+    active_jobs: set = context.bot_data.setdefault("active_jobs", set())
+    if user_id in active_jobs:
+        await update.message.reply_text("You already have a job in progress. Please wait for it to finish.")
+        return
+
+    doc = update.message.document
+    file_name = doc.file_name or ""
+    mime = doc.mime_type or ""
+
+    if not (file_name.lower().endswith(".txt") or mime == "text/plain"):
+        await update.message.reply_text("Only .txt files are supported. Please upload a plain text file.")
+        return
+
+    if doc.file_size and doc.file_size > 5 * 1024 * 1024:
+        await update.message.reply_text("File too large. Please keep .txt files under 5 MB.")
+        return
+
+    active_jobs.add(user_id)
+    logger.info("Document job started for @%s: %s", username, file_name)
+
+    status_lines = ["Starting..."]
+    status_msg = await update.message.reply_text(status_lines[0])
+
+    loop = asyncio.get_running_loop()
+    t0 = time.monotonic()
+    tmp_path = None
+
+    try:
+        # Download file to a temp location
+        tg_file = await doc.get_file()
+        tmp_fd, tmp_path = tempfile.mkstemp(suffix=".txt")
+        os.close(tmp_fd)
+        await tg_file.download_to_drive(tmp_path)
+
+        doc_title = Path(file_name).stem if file_name else None
+
+        result = await loop.run_in_executor(
+            None,
+            partial(
+                _run_pipeline_sync,
+                loop=loop,
+                chat_id=update.effective_chat.id,
+                status_message_id=status_msg.message_id,
+                bot=context.bot,
+                status_lines=status_lines,
+                file_path=tmp_path,
+                title=doc_title,
+            ),
+        )
+
+        elapsed = time.monotonic() - t0
+        await status_msg.edit_text(_format_result(result, elapsed), parse_mode="Markdown")
+        logger.info("Document job done for @%s: %s (%.1f MB, %ds)", username, result["title"], result["size_mb"], int(elapsed))
+
+    except PipelineError as e:
+        logger.error("Pipeline error for @%s on document %s: %s", username, file_name, e)
+        await status_msg.edit_text(f"Error: {e}")
+    except Exception:
+        logger.exception("Unexpected error for @%s on document %s", username, file_name)
+        await status_msg.edit_text("An unexpected error occurred. Check the bot logs.")
+    finally:
+        active_jobs.discard(user_id)
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 async def _delete(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -494,6 +597,70 @@ async def _button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     elif data == "deleteall_no":
         await query.edit_message_text("Cancelled.")
 
+    elif data == "text_yes":
+        pending_text = context.user_data.pop("pending_text", None)
+        if not pending_text:
+            await query.edit_message_text("Text expired. Please paste it again.")
+            return
+
+        user_id = query.from_user.id
+        username = query.from_user.username or str(user_id)
+        active_jobs: set = context.bot_data.setdefault("active_jobs", set())
+
+        if user_id in active_jobs:
+            await query.edit_message_text("You already have a job in progress. Please wait for it to finish.")
+            return
+
+        active_jobs.add(user_id)
+        logger.info("Text job started for @%s (%d words)", username, len(pending_text.split()))
+
+        status_lines = ["Starting..."]
+        await query.edit_message_text(status_lines[0])
+        status_message_id = query.message.message_id
+        chat_id = query.message.chat_id
+
+        loop = asyncio.get_running_loop()
+        t0 = time.monotonic()
+
+        try:
+            result = await loop.run_in_executor(
+                None,
+                partial(
+                    _run_pipeline_sync,
+                    loop=loop,
+                    chat_id=chat_id,
+                    status_message_id=status_message_id,
+                    bot=context.bot,
+                    status_lines=status_lines,
+                    text=pending_text,
+                ),
+            )
+
+            elapsed = time.monotonic() - t0
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=status_message_id,
+                text=_format_result(result, elapsed), parse_mode="Markdown",
+            )
+            logger.info("Text job done for @%s: %s (%.1f MB, %ds)", username, result["title"], result["size_mb"], int(elapsed))
+
+        except PipelineError as e:
+            logger.error("Pipeline error for @%s on pasted text: %s", username, e)
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=status_message_id, text=f"Error: {e}",
+            )
+        except Exception:
+            logger.exception("Unexpected error for @%s on pasted text", username)
+            await context.bot.edit_message_text(
+                chat_id=chat_id, message_id=status_message_id,
+                text="An unexpected error occurred. Check the bot logs.",
+            )
+        finally:
+            active_jobs.discard(user_id)
+
+    elif data == "text_no":
+        context.user_data.pop("pending_text", None)
+        await query.edit_message_text("Cancelled.")
+
     elif data.startswith("model_"):
         new_provider = data.removeprefix("model_")
         try:
@@ -558,7 +725,8 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("model", _model))
     app.add_handler(CommandHandler("voice", _voice))
     app.add_handler(CallbackQueryHandler(_button_callback))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_url))
+    app.add_handler(MessageHandler(filters.Document.ALL, _handle_document))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))
 
     logger.info("Bot started (allowed users: %s)", allowed)
     app.run_polling()

@@ -36,9 +36,19 @@ def _load_podcast_name() -> str:
     return cfg.get("podcast", "name", fallback="A2Pod")
 
 
+def _title_from_text(text: str) -> str:
+    """Derive a title from the first line or first few words of raw text."""
+    first_line = text.strip().split("\n", 1)[0].strip()
+    if len(first_line) <= 100:
+        return first_line
+    words = first_line.split()[:8]
+    return " ".join(words) + "..."
+
+
 def run_pipeline(
     url: str | None = None,
     file_path: str | None = None,
+    text: str | None = None,
     title: str | None = None,
     voice: str | None = None,
     speed: float = DEFAULT_SPEED,
@@ -68,7 +78,7 @@ def run_pipeline(
             on_progress(msg)
 
     # Check for existing episode in the podcast feed
-    if not force and not file_path and url:
+    if not force and not file_path and not text and url:
         existing = find_existing_episode(url)
         if existing:
             progress("Already processed — returning existing episode.")
@@ -80,7 +90,10 @@ def run_pipeline(
 
     # Extract text
     source_url = None
-    if file_path:
+    if text:
+        progress("Processing text...")
+        resolved_title = title or _title_from_text(text)
+    elif file_path:
         progress("Extracting text from file...")
         text = extract_from_file(file_path)
         resolved_title = title or Path(file_path).stem
