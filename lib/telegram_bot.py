@@ -25,6 +25,7 @@ from publisher import get_feed_url, find_episode, list_episodes, delete_episode,
 from tts import (
     get_voice_info, get_available_voices, set_voice, VOICES,
     get_workers, get_recommended_workers, set_workers, WORKER_OPTIONS,
+    get_speed, set_speed, SPEED_OPTIONS,
 )
 
 _CONFIG_PATH = Path.home() / ".config" / "a2pod" / "config"
@@ -124,6 +125,7 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "and I'll convert it to audio for the podcast feed.\n\n"
         "/model — show or switch LLM provider\n"
         "/voice — show or switch TTS voice\n"
+        "/speed — show or set speech speed\n"
         "/workers — show or set TTS worker count\n"
         "/feed — get the podcast feed URL\n"
         "/status — bot status and debug info\n"
@@ -149,6 +151,8 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/model <provider> <model> — switch provider and model\n"
         "/voice — show/switch TTS voice\n"
         "/voice <voice_id> — switch voice (e.g. af_heart, am_adam)\n"
+        "/speed — show/set speech speed\n"
+        "/speed <value> — set speed (0.8, 0.9, 1.0, 1.1, 1.2, 1.3, or 1.5)\n"
         "/workers — show/set TTS worker count\n"
         "/workers <count> — set workers (1, 2, 3, 4, 6, or 8)\n"
         "/feed — get the podcast feed URL\n"
@@ -305,6 +309,50 @@ async def _workers(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Error: {e}")
 
 
+async def _speed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show or set TTS speech speed."""
+    allowed = context.bot_data["allowed_users"]
+    if not _is_authorized(update.effective_user.id, allowed):
+        return await _reject_unauthorized(update)
+
+    args = context.args
+
+    if not args:
+        current = get_speed()
+
+        buttons = []
+        row = []
+        for s in SPEED_OPTIONS:
+            label = f"{s}x"
+            if s == current:
+                label = f"* {label}"
+            if s == 1.0:
+                label += " (default)"
+            row.append(InlineKeyboardButton(label, callback_data=f"speed_{s}"))
+            if len(row) == 3:
+                buttons.append(row)
+                row = []
+        if row:
+            buttons.append(row)
+
+        await update.message.reply_text(
+            f"Speech speed: *{current}x*\n\n"
+            f"Higher = faster narration. 1.0x is normal.",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown",
+        )
+        return
+
+    try:
+        speed = float(args[0])
+        set_speed(speed)
+        await update.message.reply_text(f"Speed set to *{speed}x*", parse_mode="Markdown")
+        logger.info("Speed set to %s by @%s", speed,
+                     update.effective_user.username or update.effective_user.id)
+    except (ValueError, TypeError) as e:
+        await update.message.reply_text(f"Error: {e}")
+
+
 async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed = context.bot_data["allowed_users"]
     if not _is_authorized(update.effective_user.id, allowed):
@@ -339,6 +387,7 @@ async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Started: {started_str}",
         f"LLM: {provider} / {model}",
         f"Voice: {voice_name} ({voice_id})",
+        f"Speed: {get_speed()}x",
         f"Workers: {get_workers()}",
         f"Active jobs: {len(active_jobs)}",
         f"Python: {platform.python_version()} ({platform.machine()})",
@@ -426,9 +475,10 @@ def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
 
     voice_id, _ = get_voice_info()
     workers = get_workers()
+    speed = get_speed()
     return run_pipeline(
         url=url, file_path=file_path, text=text, title=title,
-        voice=voice_id, workers=workers, no_upload=False, on_progress=on_progress,
+        voice=voice_id, speed=speed, workers=workers, no_upload=False, on_progress=on_progress,
     )
 
 
@@ -774,6 +824,16 @@ async def _button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except (ValueError, TypeError) as e:
             await query.edit_message_text(f"Error: {e}")
 
+    elif data.startswith("speed_"):
+        try:
+            speed = float(data.removeprefix("speed_"))
+            set_speed(speed)
+            await query.edit_message_text(f"Speed set to *{speed}x*", parse_mode="Markdown")
+            logger.info("Speed set to %s by @%s", speed,
+                         query.from_user.username or query.from_user.id)
+        except (ValueError, TypeError) as e:
+            await query.edit_message_text(f"Error: {e}")
+
 
 def run_bot() -> None:
     """Start the Telegram bot with long-polling."""
@@ -792,6 +852,7 @@ def run_bot() -> None:
             ("start", "Start the bot"),
             ("model", "Show or switch LLM provider"),
             ("voice", "Show or switch TTS voice"),
+            ("speed", "Show or set speech speed"),
             ("workers", "Show or set TTS worker count"),
             ("feed", "Get the podcast feed URL"),
             ("status", "Bot status and debug info"),
@@ -823,6 +884,7 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("model", _model))
     app.add_handler(CommandHandler("voice", _voice))
     app.add_handler(CommandHandler("workers", _workers))
+    app.add_handler(CommandHandler("speed", _speed))
     app.add_handler(CallbackQueryHandler(_button_callback))
     app.add_handler(MessageHandler(filters.Document.ALL, _handle_document))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_message))

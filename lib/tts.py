@@ -33,21 +33,23 @@ _MODEL_VOICES = {
 _CONFIG_PATH = os.path.expanduser("~/.config/a2pod/config")
 
 
-def _load_tts_config() -> tuple[int, str]:
-    """Read [tts] from config. Returns (workers, voice)."""
+def _load_tts_config() -> tuple[int, str, float]:
+    """Read [tts] from config. Returns (workers, voice, speed)."""
     cfg = configparser.ConfigParser()
     cfg.read(_CONFIG_PATH)
     workers = cfg.getint("tts", "workers", fallback=2)
     voice = cfg.get("tts", "voice", fallback="").strip()
     if not voice or voice not in VOICES:
         voice = DEFAULT_VOICE
-    return workers, voice
+    speed = cfg.getfloat("tts", "speed", fallback=DEFAULT_SPEED)
+    return workers, voice, speed
 
 
-DEFAULT_WORKERS, _current_voice = _load_tts_config()
+DEFAULT_WORKERS, _current_voice, _current_speed = _load_tts_config()
 
 
 WORKER_OPTIONS = [1, 2, 3, 4, 6, 8]
+SPEED_OPTIONS = [0.8, 0.9, 1.0, 1.1, 1.2, 1.3, 1.5]
 
 
 def get_workers() -> int:
@@ -78,6 +80,33 @@ def _save_tts_config_workers(workers: int) -> None:
     if not cfg.has_section("tts"):
         cfg.add_section("tts")
     cfg.set("tts", "workers", str(workers))
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w") as f:
+        cfg.write(f)
+
+
+def get_speed() -> float:
+    """Return the current speech speed."""
+    return _current_speed
+
+
+def set_speed(speed: float) -> float:
+    """Set the speech speed. Returns the new speed. Raises ValueError on invalid input."""
+    global _current_speed
+    if speed not in SPEED_OPTIONS:
+        raise ValueError(f"Invalid speed: {speed}. Choose from: {SPEED_OPTIONS}")
+    _current_speed = speed
+    _save_tts_config_speed(speed)
+    return speed
+
+
+def _save_tts_config_speed(speed: float) -> None:
+    """Persist speed to config (preserves other keys)."""
+    cfg = configparser.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+    if not cfg.has_section("tts"):
+        cfg.add_section("tts")
+    cfg.set("tts", "speed", str(speed))
     os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
     with open(_CONFIG_PATH, "w") as f:
         cfg.write(f)
