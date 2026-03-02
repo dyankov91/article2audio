@@ -6,7 +6,7 @@ Falls back gracefully if the LLM is unavailable — no crash, always returns a s
 
 from llm import generate, strip_preamble
 
-MAX_INPUT_CHARS = 6000
+MAX_INPUT_CHARS = 3000
 
 
 def _fallback_summary(text: str) -> str:

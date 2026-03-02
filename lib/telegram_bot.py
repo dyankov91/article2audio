@@ -6,6 +6,7 @@ import logging
 import os
 import re
 import signal
+import time
 from functools import partial
 from pathlib import Path
 
@@ -29,6 +30,8 @@ _STATUS_MAP = {
     "Fetching article...": "Fetching article...",
     "Extracting text from file...": "Extracting text...",
     "Cleaning text...": "Cleaning text...",
+    "Text cleaned.": "Cleaning text [done]",
+    "Generating summary...": "Generating summary...",
     "Encoding M4A...": "Encoding audio...",
     "Publishing to podcast feed...": "Publishing...",
 }
@@ -171,18 +174,35 @@ def _run_pipeline_sync(url: str, loop: asyncio.AbstractEventLoop, chat_id: int,
     """Run the sync pipeline in a thread, bridging progress back to async."""
 
     def on_progress(msg: str) -> None:
-        # Check for TTS chunk progress
-        chunk_match = re.match(r"Generating audio \[(\d+)/(\d+)\]", msg)
-        if chunk_match:
-            i, total = chunk_match.group(1), chunk_match.group(2)
-            tts_line = f"Generating audio [{i}/{total}]..."
-            # Replace existing TTS line or append
+        msg = msg.strip()
+        # Chunk-style progress: "Cleaning text [2/5]", "Generating audio [3/8]", "Chunk [2/4] done"
+        tts_start = re.match(r"Generating audio for (\d+) chunks", msg)
+        chunk_match = not tts_start and re.match(r"(Cleaning text|Generating audio) \[(\d+)/(\d+)\]", msg)
+        tts_match = not chunk_match and not tts_start and re.match(r"Chunk \[(\d+)/(\d+)\]", msg)
+        if tts_start:
+            total = tts_start.group(1)
+            label = "Generating audio"
+            progress_line = f"{label} [0/{total}]..."
+            status_lines.append(progress_line)
+        elif chunk_match:
+            label, i, total = chunk_match.group(1), chunk_match.group(2), chunk_match.group(3)
+            progress_line = f"{label} [{i}/{total}]..."
             for idx, line in enumerate(status_lines):
-                if line.startswith("Generating audio"):
-                    status_lines[idx] = tts_line
+                if line.startswith(label):
+                    status_lines[idx] = progress_line
                     break
             else:
-                status_lines.append(tts_line)
+                status_lines.append(progress_line)
+        elif tts_match:
+            i, total = tts_match.group(1), tts_match.group(2)
+            label = "Generating audio"
+            progress_line = f"{label} [{i}/{total}]..."
+            for idx, line in enumerate(status_lines):
+                if line.startswith(label):
+                    status_lines[idx] = progress_line
+                    break
+            else:
+                status_lines.append(progress_line)
         elif msg in _STATUS_MAP:
             status_lines.append(_STATUS_MAP[msg])
         else:
@@ -229,6 +249,7 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     status_msg = await update.message.reply_text(status_lines[0])
 
     loop = asyncio.get_running_loop()
+    t0 = time.monotonic()
 
     try:
         result = await loop.run_in_executor(
@@ -244,6 +265,7 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             ),
         )
 
+        elapsed = time.monotonic() - t0
         title = result["title"]
         summary = result.get("summary") or ""
         audio_url = result.get("audio_url")
@@ -257,12 +279,15 @@ async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             lines.append(f"\n{summary}")
         if audio_url:
             lines.append(f"\n[Listen]({audio_url})")
+        if not cached:
+            mins, secs = divmod(int(elapsed), 60)
+            lines.append(f"\n_Build time: {mins}m {secs}s_" if mins else f"\n_Build time: {secs}s_")
 
         await status_msg.edit_text("\n".join(lines), parse_mode="Markdown")
         if cached:
             logger.info("Job done for @%s: %s (cached)", username, title)
         else:
-            logger.info("Job done for @%s: %s (%.1f MB)", username, title, result["size_mb"])
+            logger.info("Job done for @%s: %s (%.1f MB, %ds)", username, title, result["size_mb"], int(elapsed))
 
     except PipelineError as e:
         logger.error("Pipeline error for @%s on %s: %s", username, url, e)

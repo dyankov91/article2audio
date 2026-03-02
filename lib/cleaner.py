@@ -5,10 +5,16 @@ optional LLM pass to catch subtle patterns the regex missed.
 """
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Callable
 
 from llm import generate, strip_preamble
 
-LLM_CHUNK_SIZE = 4000
+_LLM_CHUNK_SIZES = {
+    "ollama": 12000,   # local — sequential, fewer calls is better
+    "openai": 3000,    # cloud — parallel, more chunks = faster
+    "anthropic": 3000,
+}
 
 
 def clean_for_audio(text: str) -> str:
@@ -174,30 +180,28 @@ def clean_for_audio(text: str) -> str:
 
 
 _LLM_CLEAN_PROMPT = """\
-You are a text editor preparing written content for audio narration. \
-Apply ONLY these changes to the text below:
+You are preparing text for audio narration. A first cleaning pass has already \
+removed markdown, URLs, HTML, and obvious promotional lines. Your job is to \
+catch what automated cleaning missed:
 
-1. REMOVE any self-promotional or engagement-bait lines: "save/bookmark this", \
-"what you're about to read", "if you enjoyed this", calls to action, \
-newsletter plugs, social media prompts, author bios.
-2. REPLACE references to written format with audio format: \
-"this post" → "this episode", "this article" → "this episode", \
-"this blog post" → "this episode", "reading" → "listening" (when referring \
-to the content itself, not reading as a general activity), \
-"readers" → "listeners", "read on" → "listen on".
-3. REMOVE any remaining web artifacts: navigation links, "read more", \
-share buttons text, cookie notices, comment section prompts.
+1. Remove any remaining self-promotion, calls to action, newsletter plugs, \
+or social media prompts that slipped through.
+2. Remove references to visual elements: "the chart below", "as shown above", \
+"see the diagram", "in the screenshot". Drop the entire sentence if it only \
+describes a visual.
+3. Replace remaining references to written format: "this post" → "this episode", \
+"this article" → "this episode", "readers" → "listeners", \
+"reading" → "listening" (when referring to consuming this content).
+4. Smooth any awkward transitions or sentence fragments left by prior cleanup \
+(e.g., dangling "Additionally," at the start of a paragraph that lost its context).
 
-CRITICAL RULES:
+RULES:
 - Return the COMPLETE text with only the above changes applied.
-- Do NOT summarize, shorten, or omit any informational content.
-- Do NOT add commentary, explanations, or preamble.
-- Do NOT start with "Here is" or any introduction. Start directly with the content.
-- Do NOT rewrite sentences beyond the specific changes listed above.
-- Preserve all paragraph breaks and structure.
-- Output ONLY the cleaned text, nothing else.
+- Do NOT summarize, shorten, or omit informational content.
+- Do NOT add commentary or preamble. Start directly with the cleaned content.
+- Preserve all paragraph breaks.
 
-Text to clean:
+Text:
 """
 
 
@@ -218,18 +222,21 @@ def _llm_clean_chunk(text: str, model: str) -> str | None:
     return result
 
 
-def llm_clean_for_audio(text: str, model: str | None = None) -> str:
+def llm_clean_for_audio(text: str, model: str | None = None,
+                        on_progress: Callable[[str], None] | None = None) -> str:
     """LLM final pass to catch what regex missed. Returns input unchanged on failure."""
     if model is None:
         from llm import DEFAULT_MODEL
         model = DEFAULT_MODEL
+    from llm import _provider
+    chunk_size = _LLM_CHUNK_SIZES.get(_provider, 3000)
     paragraphs = text.split("\n\n")
     chunks = []
     current: list[str] = []
     current_len = 0
 
     for para in paragraphs:
-        if current_len + len(para) > LLM_CHUNK_SIZE and current:
+        if current_len + len(para) > chunk_size and current:
             chunks.append("\n\n".join(current))
             current = []
             current_len = 0
@@ -238,11 +245,39 @@ def llm_clean_for_audio(text: str, model: str | None = None) -> str:
     if current:
         chunks.append("\n\n".join(current))
 
-    cleaned = []
-    for chunk in chunks:
-        result = _llm_clean_chunk(chunk, model)
-        if result is None:
-            return text  # bail entirely on first failure
-        cleaned.append(result)
+    total = len(chunks)
 
-    return "\n\n".join(cleaned)
+    if total == 1:
+        if on_progress:
+            on_progress(f"Cleaning text [1/1]")
+        result = _llm_clean_chunk(chunks[0], model)
+        return result if result is not None else text
+
+    # Parallelize for cloud providers; Ollama is local/serial so run sequentially.
+    parallel = _provider != "ollama"
+
+    if parallel:
+        results = [None] * total
+        with ThreadPoolExecutor(max_workers=total) as pool:
+            futures = {pool.submit(_llm_clean_chunk, chunk, model): i
+                       for i, chunk in enumerate(chunks)}
+            for future in as_completed(futures):
+                idx = futures[future]
+                result = future.result()
+                if result is None:
+                    return text
+                results[idx] = result
+                if on_progress:
+                    done = sum(1 for r in results if r is not None)
+                    on_progress(f"Cleaning text [{done}/{total}]")
+    else:
+        results = []
+        for i, chunk in enumerate(chunks):
+            if on_progress:
+                on_progress(f"Cleaning text [{i + 1}/{total}]")
+            result = _llm_clean_chunk(chunk, model)
+            if result is None:
+                return text
+            results.append(result)
+
+    return "\n\n".join(results)

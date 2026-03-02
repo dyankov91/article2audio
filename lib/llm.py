@@ -250,8 +250,16 @@ def generate(
 
     Returns the generated text, or None on failure.
     """
+    import logging
+    import time
+    log = logging.getLogger(__name__)
     resolved_model = model or DEFAULT_MODEL
     backend = _BACKENDS.get(_provider)
     if backend is None:
         raise SystemExit(f"Unknown LLM provider: {_provider}")
-    return backend(prompt, temperature, max_tokens, resolved_model, _api_keys.get(_provider, ""))
+    t0 = time.monotonic()
+    result = backend(prompt, temperature, max_tokens, resolved_model, _api_keys.get(_provider, ""))
+    elapsed = time.monotonic() - t0
+    log.info("LLM %s/%s — %d chars in, %d chars out, %.1fs",
+             _provider, resolved_model, len(prompt), len(result) if result else 0, elapsed)
+    return result

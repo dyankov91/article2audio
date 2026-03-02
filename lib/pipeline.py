@@ -75,19 +75,28 @@ def run_pipeline(
         resolved_title = title or auto_title or "Untitled Article"
     progress("Text extracted.")
 
-    # Clean text for audio (regex pass + LLM final pass)
+    # Clean text for audio (regex pass first, then LLM pass)
     progress("Cleaning text...")
     text = clean_for_audio(text)
-    progress(f"LLM cleaning pass ({model})...")
-    text = llm_clean_for_audio(text, model)
-    progress("Text cleaned.")
 
-    # Generate episode summary
+    # For cloud providers, run summary generation in parallel with LLM cleaning
+    # (summary only needs the regex-cleaned text, not the LLM-cleaned version)
     summary = None
-    if not no_summary:
-        progress(f"Generating summary ({model})...")
-        summary = get_summary(text, resolved_title, model)
-        progress("Summary ready.")
+    from llm import _provider
+    if not no_summary and _provider != "ollama":
+        from concurrent.futures import ThreadPoolExecutor
+        progress("Generating summary...")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            clean_future = pool.submit(llm_clean_for_audio, text, model, progress)
+            summary_future = pool.submit(get_summary, text, resolved_title, model)
+            text = clean_future.result()
+            summary = summary_future.result()
+    else:
+        text = llm_clean_for_audio(text, model, on_progress=progress)
+        if not no_summary:
+            progress("Generating summary...")
+            summary = get_summary(text, resolved_title, model)
+    progress("Text cleaned.")
 
     word_count = len(text.split())
     est_minutes = word_count / 150
