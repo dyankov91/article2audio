@@ -15,17 +15,73 @@ DEFAULT_SPEED = 1.0
 LANG_CODE = "a"  # English
 SAMPLE_RATE = 24000
 
+VOICES = {
+    "af_heart":   ("Heart",   "Female"),
+    "af_bella":   ("Bella",   "Female"),
+    "af_nicole":  ("Nicole",  "Female"),
+    "af_sarah":   ("Sarah",   "Female"),
+    "af_sky":     ("Sky",     "Female"),
+    "am_adam":    ("Adam",    "Male"),
+    "am_michael": ("Michael", "Male"),
+}
+
+# Model -> supported voice IDs (for future TTS engines)
+_MODEL_VOICES = {
+    "mlx-community/Kokoro-82M-bf16": list(VOICES.keys()),
+}
+
 _CONFIG_PATH = os.path.expanduser("~/.config/a2pod/config")
 
 
-def _load_tts_config() -> int:
-    """Read [tts] from config. Returns workers count."""
+def _load_tts_config() -> tuple[int, str]:
+    """Read [tts] from config. Returns (workers, voice)."""
     cfg = configparser.ConfigParser()
     cfg.read(_CONFIG_PATH)
-    return cfg.getint("tts", "workers", fallback=2)
+    workers = cfg.getint("tts", "workers", fallback=2)
+    voice = cfg.get("tts", "voice", fallback="").strip()
+    if not voice or voice not in VOICES:
+        voice = DEFAULT_VOICE
+    return workers, voice
 
 
-DEFAULT_WORKERS = _load_tts_config()
+DEFAULT_WORKERS, _current_voice = _load_tts_config()
+
+
+def get_voice_info() -> tuple[str, str]:
+    """Return (voice_id, model) for the active voice."""
+    return _current_voice, MODEL
+
+
+def get_available_voices() -> dict[str, tuple[str, str]]:
+    """Return {voice_id: (friendly_name, gender)} for the current TTS model."""
+    supported = _MODEL_VOICES.get(MODEL, list(VOICES.keys()))
+    return {vid: VOICES[vid] for vid in supported if vid in VOICES}
+
+
+def set_voice(voice_id: str) -> tuple[str, str]:
+    """Switch the active voice. Returns (voice_id, friendly_name).
+
+    Raises ValueError if voice_id is not available.
+    """
+    global _current_voice
+    available = get_available_voices()
+    if voice_id not in available:
+        raise ValueError(f"Unknown voice: {voice_id}")
+    _current_voice = voice_id
+    _save_tts_config(voice_id)
+    return voice_id, available[voice_id][0]
+
+
+def _save_tts_config(voice: str) -> None:
+    """Persist voice choice to config (preserves other keys)."""
+    cfg = configparser.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+    if not cfg.has_section("tts"):
+        cfg.add_section("tts")
+    cfg.set("tts", "voice", voice)
+    os.makedirs(os.path.dirname(_CONFIG_PATH), exist_ok=True)
+    with open(_CONFIG_PATH, "w") as f:
+        cfg.write(f)
 
 
 def _default_progress(msg: str) -> None:

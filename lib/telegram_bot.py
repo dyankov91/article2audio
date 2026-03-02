@@ -21,6 +21,7 @@ from errors import PipelineError
 from llm import get_provider_info, get_available_providers, set_provider
 from pipeline import run_pipeline
 from publisher import get_feed_url, find_episode, list_episodes, delete_episode, delete_all_episodes
+from tts import get_voice_info, get_available_voices, set_voice, VOICES
 
 _CONFIG_PATH = Path.home() / ".config" / "a2pod" / "config"
 
@@ -104,6 +105,7 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(
         "Send me an article URL and I'll convert it to audio for the podcast feed.\n\n"
         "/model — show or switch LLM provider\n"
+        "/voice — show or switch TTS voice\n"
         "/feed — get the podcast feed URL\n"
         "/status — bot status and debug info\n"
         "/delete <title or URL> — remove an episode\n"
@@ -126,6 +128,8 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/model — show/switch LLM provider and model\n"
         "/model <provider> — switch provider (ollama, openai, anthropic)\n"
         "/model <provider> <model> — switch provider and model\n"
+        "/voice — show/switch TTS voice\n"
+        "/voice <voice_id> — switch voice (e.g. af_heart, am_adam)\n"
         "/feed — get the podcast feed URL\n"
         "/status — bot status and debug info\n"
         "/delete <title or URL> — remove an episode\n"
@@ -189,6 +193,49 @@ async def _model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Error: {e}")
 
 
+async def _voice(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show or switch the TTS voice."""
+    allowed = context.bot_data["allowed_users"]
+    if not _is_authorized(update.effective_user.id, allowed):
+        return await _reject_unauthorized(update)
+
+    args = context.args
+
+    if not args:
+        voice_id, _ = get_voice_info()
+        available = get_available_voices()
+
+        # Group by gender, 2 buttons per row
+        female = [(vid, name) for vid, (name, g) in sorted(available.items()) if g == "Female"]
+        male = [(vid, name) for vid, (name, g) in sorted(available.items()) if g == "Male"]
+
+        buttons = []
+        for group in (female, male):
+            for i in range(0, len(group), 2):
+                row = []
+                for vid, name in group[i:i+2]:
+                    label = f"{'* ' if vid == voice_id else ''}{name} ({vid})"
+                    row.append(InlineKeyboardButton(label, callback_data=f"voice_{vid}"))
+                buttons.append(row)
+
+        friendly = VOICES[voice_id][0]
+        await update.message.reply_text(
+            f"Current voice: *{friendly}* (`{voice_id}`)",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown",
+        )
+        return
+
+    new_voice = args[0].lower()
+    try:
+        vid, friendly = set_voice(new_voice)
+        await update.message.reply_text(f"Switched to voice *{friendly}* (`{vid}`)", parse_mode="Markdown")
+        logger.info("Voice switched to %s by @%s", vid,
+                     update.effective_user.username or update.effective_user.id)
+    except ValueError as e:
+        await update.message.reply_text(f"Error: {e}")
+
+
 async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed = context.bot_data["allowed_users"]
     if not _is_authorized(update.effective_user.id, allowed):
@@ -212,6 +259,8 @@ async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     started_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_at)) if started_at else "unknown"
 
     provider, model = get_provider_info()
+    voice_id, _ = get_voice_info()
+    voice_name = VOICES.get(voice_id, (voice_id,))[0]
     active_jobs: set = context.bot_data.get("active_jobs", set())
 
     lines = [
@@ -220,6 +269,7 @@ async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Uptime: {uptime_str}",
         f"Started: {started_str}",
         f"LLM: {provider} / {model}",
+        f"Voice: {voice_name} ({voice_id})",
         f"Active jobs: {len(active_jobs)}",
         f"Python: {platform.python_version()} ({platform.machine()})",
     ]
@@ -271,7 +321,8 @@ def _run_pipeline_sync(url: str, loop: asyncio.AbstractEventLoop, chat_id: int,
             loop,
         )
 
-    return run_pipeline(url=url, no_upload=False, on_progress=on_progress)
+    voice_id, _ = get_voice_info()
+    return run_pipeline(url=url, voice=voice_id, no_upload=False, on_progress=on_progress)
 
 
 async def _handle_url(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -455,6 +506,18 @@ async def _button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         except ValueError as e:
             await query.edit_message_text(f"Error: {e}")
 
+    elif data.startswith("voice_"):
+        new_voice = data.removeprefix("voice_")
+        try:
+            vid, friendly = set_voice(new_voice)
+            await query.edit_message_text(
+                f"Switched to voice *{friendly}* (`{vid}`)", parse_mode="Markdown"
+            )
+            logger.info("Voice switched to %s by @%s", vid,
+                         query.from_user.username or query.from_user.id)
+        except ValueError as e:
+            await query.edit_message_text(f"Error: {e}")
+
 
 def run_bot() -> None:
     """Start the Telegram bot with long-polling."""
@@ -472,6 +535,7 @@ def run_bot() -> None:
         await application.bot.set_my_commands([
             ("start", "Start the bot"),
             ("model", "Show or switch LLM provider"),
+            ("voice", "Show or switch TTS voice"),
             ("feed", "Get the podcast feed URL"),
             ("status", "Bot status and debug info"),
             ("delete", "Remove an episode"),
@@ -492,6 +556,7 @@ def run_bot() -> None:
     app.add_handler(CommandHandler("deleteall", _deleteall))
     app.add_handler(CommandHandler("restart", _restart))
     app.add_handler(CommandHandler("model", _model))
+    app.add_handler(CommandHandler("voice", _voice))
     app.add_handler(CallbackQueryHandler(_button_callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_url))
 

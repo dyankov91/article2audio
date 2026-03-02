@@ -40,7 +40,7 @@ def run_pipeline(
     url: str | None = None,
     file_path: str | None = None,
     title: str | None = None,
-    voice: str = DEFAULT_VOICE,
+    voice: str | None = None,
     speed: float = DEFAULT_SPEED,
     model: str | None = None,
     no_upload: bool = False,
@@ -55,6 +55,10 @@ def run_pipeline(
 
     Returns dict with output_path, vtt_path, title, size_mb, and optionally feed_url.
     """
+    if voice is None:
+        from tts import get_voice_info
+        voice, _ = get_voice_info()
+
     if model is None:
         from llm import DEFAULT_MODEL
         model = DEFAULT_MODEL
