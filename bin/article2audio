@@ -3,7 +3,7 @@
 a2pod — Convert any article URL to an audiobook.
 
 Usage:
-    a2pod <url> [--voice VOICE] [--speed SPEED] [--no-upload]
+    a2pod <url> [--voice VOICE] [--speed SPEED]
     a2pod --file <path> [--title TITLE] [--voice VOICE] [--speed SPEED]
 """
 
@@ -36,7 +36,6 @@ def main():
               a2pod https://example.com/article
               a2pod https://example.com/article --voice am_michael
               a2pod --file article.txt --title "My Article"
-              a2pod https://example.com/article --no-upload
         """),
     )
     parser.add_argument("url", nargs="?", help="Article URL to convert")
@@ -46,8 +45,6 @@ def main():
                         help=f"TTS voice (default: {DEFAULT_VOICE})")
     parser.add_argument("--speed", "-s", type=float, default=DEFAULT_SPEED,
                         help=f"Speech speed (default: {DEFAULT_SPEED})")
-    parser.add_argument("--no-upload", action="store_true",
-                        help="Skip remote sync (local feed is always updated)")
     parser.add_argument("--output", "-o", help="Custom output path")
     parser.add_argument("--model", "-m", default=DEFAULT_MODEL,
                         help=f"LLM model (default: {DEFAULT_MODEL}, based on configured provider)")
@@ -107,7 +104,6 @@ def main():
             voice=args.voice,
             speed=args.speed,
             model=args.model,
-            no_upload=args.no_upload,
             no_summary=args.no_summary,
             no_intro=args.no_intro,
             output=args.output,

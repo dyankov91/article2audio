@@ -45,6 +45,10 @@ def run_server():
     port = _load_port()
     SERVE_DIR.mkdir(parents=True, exist_ok=True)
 
+    # Ensure feed.xml exists so podcast apps can subscribe immediately
+    from publisher import ensure_feed_exists
+    ensure_feed_exists()
+
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
     logging.basicConfig(
         filename=str(LOG_PATH),

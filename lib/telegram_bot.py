@@ -21,7 +21,7 @@ from telegram.ext import (
 from errors import PipelineError
 from llm import get_provider_info, get_available_providers, set_provider
 from pipeline import run_pipeline
-from publisher import get_feed_url, get_remote_feed_urls, find_episode, list_episodes, delete_episode, delete_all_episodes
+from publisher import get_feed_url, find_episode, list_episodes, delete_episode, delete_all_episodes
 from tts import (
     get_voice_info, get_available_voices, set_voice, VOICES,
     get_workers, get_recommended_workers, set_workers, WORKER_OPTIONS,
@@ -177,11 +177,7 @@ async def _feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed = context.bot_data["allowed_users"]
     if not _is_authorized(update.effective_user.id, allowed):
         return await _reject_unauthorized(update)
-    lines = [f"Local: {get_feed_url()}"]
-    remote_urls = get_remote_feed_urls()
-    for url in remote_urls:
-        lines.append(f"Remote: {url}")
-    await update.message.reply_text("\n".join(lines))
+    await update.message.reply_text(get_feed_url())
 
 
 async def _model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -395,11 +391,18 @@ async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("\n".join(lines))
 
 
+def _escape_markdown(text: str) -> str:
+    """Escape Telegram Markdown V1 special characters."""
+    for ch in ("_", "*", "`", "["):
+        text = text.replace(ch, f"\\{ch}")
+    return text
+
+
 def _format_result(result: dict, elapsed: float) -> str:
     """Format a pipeline result dict into a Markdown message."""
     cached = result.get("cached", False)
-    title = result["title"]
-    summary = result.get("summary") or ""
+    title = _escape_markdown(result["title"])
+    summary = _escape_markdown(result.get("summary") or "")
     audio_url = result.get("audio_url")
 
     lines = []
@@ -478,7 +481,7 @@ def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
     speed = get_speed()
     return run_pipeline(
         url=url, file_path=file_path, text=text, title=title,
-        voice=voice_id, speed=speed, workers=workers, no_upload=False, on_progress=on_progress,
+        voice=voice_id, speed=speed, workers=workers, on_progress=on_progress,
     )
 
 
@@ -547,7 +550,11 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
 
         elapsed = time.monotonic() - t0
-        await status_msg.edit_text(_format_result(result, elapsed), parse_mode="Markdown")
+        text = _format_result(result, elapsed)
+        try:
+            await status_msg.edit_text(text, parse_mode="Markdown")
+        except Exception:
+            await status_msg.edit_text(text)
         if result.get("cached"):
             logger.info("Job done for @%s: %s (cached)", username, result["title"])
         else:
@@ -624,7 +631,11 @@ async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         )
 
         elapsed = time.monotonic() - t0
-        await status_msg.edit_text(_format_result(result, elapsed), parse_mode="Markdown")
+        text = _format_result(result, elapsed)
+        try:
+            await status_msg.edit_text(text, parse_mode="Markdown")
+        except Exception:
+            await status_msg.edit_text(text)
         logger.info("Document job done for @%s: %s (%.1f MB, %ds)", username, result["title"], result["size_mb"], int(elapsed))
 
     except PipelineError as e:
@@ -676,14 +687,12 @@ async def _deleteall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     count = len(episodes)
-    remote_urls = get_remote_feed_urls()
-    extra = " and remote backends" if remote_urls else ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Yes, delete everything", callback_data="deleteall_yes"),
         InlineKeyboardButton("Cancel", callback_data="deleteall_no"),
     ]])
     await update.message.reply_text(
-        f"Delete all {count} episode(s) and their files locally{extra}?",
+        f"Delete all {count} episode(s) and their files?",
         reply_markup=keyboard,
     )
 
@@ -768,10 +777,16 @@ async def _button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             )
 
             elapsed = time.monotonic() - t0
-            await context.bot.edit_message_text(
-                chat_id=chat_id, message_id=status_message_id,
-                text=_format_result(result, elapsed), parse_mode="Markdown",
-            )
+            text = _format_result(result, elapsed)
+            try:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=status_message_id,
+                    text=text, parse_mode="Markdown",
+                )
+            except Exception:
+                await context.bot.edit_message_text(
+                    chat_id=chat_id, message_id=status_message_id, text=text,
+                )
             logger.info("Text job done for @%s: %s (%.1f MB, %ds)", username, result["title"], result["size_mb"], int(elapsed))
 
         except PipelineError as e:

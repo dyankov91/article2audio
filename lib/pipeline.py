@@ -54,7 +54,6 @@ def run_pipeline(
     voice: str | None = None,
     speed: float = DEFAULT_SPEED,
     model: str | None = None,
-    no_upload: bool = False,
     no_summary: bool = False,
     no_intro: bool = False,
     output: str | None = None,
@@ -215,11 +214,10 @@ def run_pipeline(
         "summary": summary,
     }
 
-    # Publish to local feed (always) and remote backends (unless --no-upload)
     progress("Publishing to podcast feed...")
     voice_name = VOICES.get(voice, (voice,))[0]
     feed_url = publish_episode(output_path, resolved_title, source_url, summary, vtt_path,
-                               voice_name=voice_name, no_upload=no_upload)
+                               voice_name=voice_name)
     result["feed_url"] = feed_url
     progress("Publishing done.")
     progress(f"Published. Feed: {feed_url}")

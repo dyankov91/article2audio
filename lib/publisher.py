@@ -1,4 +1,4 @@
-"""Local-first podcast feed management with optional remote backend sync."""
+"""Single-provider podcast feed management (local filesystem or remote backend)."""
 
 import configparser
 import functools
@@ -14,7 +14,7 @@ from xml.etree import ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
-from backends import get_configured_backends
+from backends import get_active_backend
 
 CONFIG_PATH = Path.home() / ".config" / "a2pod" / "config"
 OUTPUT_DIR = Path.home() / "A2Pod"
@@ -52,31 +52,88 @@ def _load_config() -> dict:
     }
 
 
-@functools.lru_cache(maxsize=1)
 def _get_local_base_url() -> str:
     config = _load_config()
-    hostname = config["hostname"]
-    if not hostname:
-        hostname = socket.gethostname()
-        if not hostname.endswith(".local"):
-            hostname += ".local"
+    host = config["hostname"]
+    if not host:
+        host = _get_lan_ip()
     port = int(config["port"])
-    return f"http://{hostname}:{port}"
+    return f"http://{host}:{port}"
+
+
+def _get_lan_ip() -> str:
+    """Get this machine's LAN IP address."""
+    try:
+        # Connect to a public IP (doesn't send data) to find the local interface
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "127.0.0.1"
+
+
+# ─── Provider-aware I/O ──────────────────────────────────────────────────────
+
+def _get_base_url() -> str:
+    """Return the base URL for the active provider."""
+    backend = get_active_backend()
+    if backend is None:
+        return _get_local_base_url()
+    return backend.get_base_url()
+
+
+def _read_feed() -> ET.Element | None:
+    """Read the feed from the active provider. Returns parsed XML or None."""
+    backend = get_active_backend()
+    if backend is None:
+        if not LOCAL_FEED_PATH.exists():
+            return None
+        raw = LOCAL_FEED_PATH.read_text(encoding="utf-8")
+        return _parse_feed_xml(raw)
+    raw = backend.read_feed()
+    if raw is None:
+        return None
+    return _parse_feed_xml(raw)
+
+
+def _write_feed(rss: ET.Element) -> None:
+    """Write the feed to the active provider."""
+    backend = get_active_backend()
+    xml_content = _serialize_feed(rss)
+    if backend is None:
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        LOCAL_FEED_PATH.write_text(xml_content, encoding="utf-8")
+    else:
+        backend.write_feed(xml_content)
 
 
 # ─── Feed URL accessors ──────────────────────────────────────────────────────
 
 def get_feed_url() -> str:
-    """Return the local feed URL (always available)."""
-    return f"{_get_local_base_url()}/feed.xml"
+    """Return the feed URL for the active provider."""
+    backend = get_active_backend()
+    if backend is None:
+        return f"{_get_local_base_url()}/feed.xml"
+    return backend.get_feed_url()
 
 
-def get_remote_feed_urls() -> list[str]:
-    """Return feed URLs from all configured remote backends."""
-    return [b.get_feed_url() for b in get_configured_backends()]
+def ensure_feed_exists() -> None:
+    """Create feed.xml if it doesn't exist yet (local provider only)."""
+    backend = get_active_backend()
+    if backend is not None:
+        return
+    if LOCAL_FEED_PATH.exists():
+        return
+    config = _load_config()
+    base_url = _get_local_base_url()
+    rss = _build_fresh_feed(base_url, config)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    LOCAL_FEED_PATH.write_text(_serialize_feed(rss), encoding="utf-8")
 
 
-# ─── Local feed I/O ──────────────────────────────────────────────────────────
+# ─── Feed XML helpers ─────────────────────────────────────────────────────────
 
 def _parse_feed_xml(raw: str) -> ET.Element:
     """Parse feed XML string, deduplicating xmlns:itunes if present (legacy bug)."""
@@ -85,21 +142,6 @@ def _parse_feed_xml(raw: str) -> ET.Element:
         idx = raw.rindex(ns_decl)
         raw = raw[:idx] + raw[idx + len(ns_decl):]
     return ET.fromstring(raw)
-
-
-def _read_local_feed() -> ET.Element | None:
-    """Read feed.xml from ~/A2Pod/. Returns None if not found."""
-    if not LOCAL_FEED_PATH.exists():
-        return None
-    raw = LOCAL_FEED_PATH.read_text(encoding="utf-8")
-    return _parse_feed_xml(raw)
-
-
-def _write_local_feed(rss: ET.Element) -> None:
-    """Write feed.xml to ~/A2Pod/."""
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    xml_content = _serialize_feed(rss)
-    LOCAL_FEED_PATH.write_text(xml_content, encoding="utf-8")
 
 
 def _serialize_feed(rss: ET.Element) -> str:
@@ -244,14 +286,26 @@ def _collect_item_paths(item: ET.Element, base_url: str) -> list[str]:
     return paths
 
 
+def _cleanup_local_files(paths: list[str]) -> int:
+    """Delete local .m4a/.vtt files after successful remote upload. Returns count deleted."""
+    deleted = 0
+    for path in paths:
+        p = Path(path)
+        if p.exists():
+            p.unlink()
+            deleted += 1
+            logger.info("Cleaned up local file: %s", p)
+    return deleted
+
+
 # ─── Episode operations ───────────────────────────────────────────────────────
 
 def find_existing_episode(url: str) -> dict | None:
-    """Check if a URL was already processed by searching the local feed.
+    """Check if a URL was already processed by searching the feed.
 
     Returns dict with title, audio_url, summary, feed_url, cached=True, or None.
     """
-    rss = _read_local_feed()
+    rss = _read_feed()
     if rss is None:
         return None
 
@@ -273,11 +327,11 @@ def find_existing_episode(url: str) -> dict | None:
 
 
 def find_episode(query: str) -> dict | None:
-    """Search local feed by URL (exact match) or title (case-insensitive substring).
+    """Search feed by URL (exact match) or title (case-insensitive substring).
 
     Returns {"title", "link", "audio_url"} or None.
     """
-    rss = _read_local_feed()
+    rss = _read_feed()
     if rss is None:
         return None
 
@@ -294,7 +348,7 @@ def find_episode(query: str) -> dict | None:
 
 def list_episodes() -> list[dict]:
     """Return list of {"title", "link"} for all feed items."""
-    rss = _read_local_feed()
+    rss = _read_feed()
     if rss is None:
         return []
 
@@ -307,43 +361,59 @@ def list_episodes() -> list[dict]:
 
 def publish_episode(local_path: str, title: str, source_url: str | None = None,
                     summary: str | None = None, transcript_path: str | None = None,
-                    voice_name: str | None = None, no_upload: bool = False) -> str:
-    """Publish an episode: always updates local feed, optionally syncs to remote backends.
+                    voice_name: str | None = None) -> str:
+    """Publish an episode to the active provider's feed.
 
-    Args:
-        no_upload: If True, skip remote backend sync (local feed still updated).
+    When provider=s3: uploads files, updates remote feed, deletes local .m4a/.vtt.
+    When provider=local: updates local feed, files stay.
 
-    Returns the local feed URL.
+    Returns the feed URL.
     """
     config = _load_config()
-    base_url = _get_local_base_url()
+    backend = get_active_backend()
+    base_url = _get_base_url()
     file_size = os.path.getsize(local_path)
     filename = os.path.basename(local_path)
     duration = _get_duration_seconds(local_path)
 
-    # Local feed URLs are flat (no subdirectory prefix)
-    enclosure_url = f"{base_url}/{filename}"
-    transcript_url = None
-    if transcript_path and os.path.exists(transcript_path):
-        vtt_filename = os.path.basename(transcript_path)
-        transcript_url = f"{base_url}/{vtt_filename}"
+    if backend is not None:
+        # Remote provider: upload files, build remote URLs
+        remote_key = backend.remote_key(filename)
+        backend.upload_file(local_path, remote_key, AUDIO_CONTENT_TYPE)
+        enclosure_url = f"{base_url}/{remote_key}"
 
-    # Read or create local feed
-    rss = _read_local_feed() or _build_fresh_feed(base_url, config)
-    _update_channel_metadata(rss, base_url, config)
+        transcript_url = None
+        if transcript_path and os.path.exists(transcript_path):
+            vtt_filename = os.path.basename(transcript_path)
+            vtt_key = backend.remote_key(vtt_filename)
+            backend.upload_file(transcript_path, vtt_key, "text/vtt; charset=utf-8")
+            transcript_url = f"{base_url}/{vtt_key}"
 
-    _add_feed_item(rss, title, enclosure_url, file_size, duration, source_url, summary,
-                   transcript_url, voice_name)
-    _write_local_feed(rss)
+        # Read or create remote feed
+        rss = _read_feed() or _build_fresh_feed(base_url, config)
+        _update_channel_metadata(rss, base_url, config)
+        _add_feed_item(rss, title, enclosure_url, file_size, duration, source_url, summary,
+                       transcript_url, voice_name)
+        _write_feed(rss)
 
-    # Sync to remote backends
-    if not no_upload:
-        for backend in get_configured_backends():
-            try:
-                backend.sync_episode(local_path, transcript_path, title, file_size,
-                                     duration, source_url, summary, voice_name, config)
-            except Exception as e:
-                logger.warning("Remote sync failed for %s: %s", backend.__class__.__name__, e)
+        # Clean up local files after successful upload
+        local_files = [local_path]
+        if transcript_path and os.path.exists(transcript_path):
+            local_files.append(transcript_path)
+        _cleanup_local_files(local_files)
+    else:
+        # Local provider: flat filenames, local feed
+        enclosure_url = f"{base_url}/{filename}"
+        transcript_url = None
+        if transcript_path and os.path.exists(transcript_path):
+            vtt_filename = os.path.basename(transcript_path)
+            transcript_url = f"{base_url}/{vtt_filename}"
+
+        rss = _read_feed() or _build_fresh_feed(base_url, config)
+        _update_channel_metadata(rss, base_url, config)
+        _add_feed_item(rss, title, enclosure_url, file_size, duration, source_url, summary,
+                       transcript_url, voice_name)
+        _write_feed(rss)
 
     return get_feed_url()
 
@@ -351,12 +421,12 @@ def publish_episode(local_path: str, title: str, source_url: str | None = None,
 def delete_episode(query: str) -> dict:
     """Delete a single episode matching query (URL or title substring).
 
-    Removes from local feed, deletes local files, then syncs to remote backends.
+    Removes from feed and deletes files from the active provider.
     Returns {"title", "files_deleted"}.
     """
     from errors import PipelineError
 
-    rss = _read_local_feed()
+    rss = _read_feed()
     if rss is None:
         raise PipelineError("No podcast feed found.")
 
@@ -366,102 +436,65 @@ def delete_episode(query: str) -> dict:
         raise PipelineError(f"No episode found matching: {query}")
 
     title = matched_item.findtext("title", "")
-    base_url = _get_local_base_url()
-    local_files = _collect_item_paths(matched_item, base_url)
+    backend = get_active_backend()
+    base_url = _get_base_url()
+    paths = _collect_item_paths(matched_item, base_url)
 
     channel.remove(matched_item)
-    _write_local_feed(rss)
+    _write_feed(rss)
 
-    # Delete local files
     files_deleted = 0
-    for filename in local_files:
-        filepath = OUTPUT_DIR / filename
-        if filepath.exists():
-            filepath.unlink()
-            files_deleted += 1
-
-    # Sync deletions to remote backends
-    for backend in get_configured_backends():
-        try:
-            _delete_episode_from_backend(backend, query)
-        except Exception as e:
-            logger.warning("Remote delete failed for %s: %s", backend.__class__.__name__, e)
+    if backend is not None:
+        for key in paths:
+            try:
+                backend.delete_file(key)
+                files_deleted += 1
+            except Exception:
+                pass
+    else:
+        for filename in paths:
+            filepath = OUTPUT_DIR / filename
+            if filepath.exists():
+                filepath.unlink()
+                files_deleted += 1
 
     return {"title": title, "files_deleted": files_deleted}
 
 
-def _delete_episode_from_backend(backend, query: str) -> None:
-    """Delete an episode from a remote backend's feed and files."""
-    raw = backend.read_feed()
-    if not raw:
-        return
-
-    rss = _parse_feed_xml(raw)
-    channel = rss.find("channel")
-    item = _find_matching_item(channel, query)
-    if item is None:
-        return
-
-    remote_base = backend.get_base_url()
-    for key in _collect_item_paths(item, remote_base):
-        try:
-            backend.delete_file(key)
-        except Exception:
-            pass
-    channel.remove(item)
-    backend.write_feed(_serialize_feed(rss))
-
-
 def delete_all_episodes() -> dict:
-    """Remove all episodes from local feed and delete local audio/vtt files.
+    """Remove all episodes from the feed and delete all files.
 
-    Also syncs to remote backends. Returns {"episodes_deleted", "files_deleted"}.
+    Operates on the active provider only. Returns {"episodes_deleted", "files_deleted"}.
     """
-    rss = _read_local_feed()
+    backend = get_active_backend()
+    base_url = _get_base_url()
+    config = _load_config()
+
+    rss = _read_feed()
     if rss is None:
-        config = _load_config()
-        rss = _build_fresh_feed(_get_local_base_url(), config)
+        rss = _build_fresh_feed(base_url, config)
 
     channel = rss.find("channel")
     items = channel.findall("item")
     episodes_deleted = len(items)
 
-    # Collect local files before removing items
-    base_url = _get_local_base_url()
-    all_local_files = []
+    # Collect file paths before removing items
+    all_paths = []
     for item in items:
-        all_local_files.extend(_collect_item_paths(item, base_url))
+        all_paths.extend(_collect_item_paths(item, base_url))
 
     for item in items:
         channel.remove(item)
-    _write_local_feed(rss)
+    _write_feed(rss)
 
-    # Delete local audio/vtt files
     files_deleted = 0
-    for filename in all_local_files:
-        filepath = OUTPUT_DIR / filename
-        if filepath.exists():
-            filepath.unlink()
-            files_deleted += 1
-
-    # Sync to remote backends
-    for backend in get_configured_backends():
-        try:
-            _delete_all_from_backend(backend)
-        except Exception as e:
-            logger.warning("Remote delete-all failed for %s: %s", backend.__class__.__name__, e)
+    if backend is not None:
+        files_deleted = backend.delete_files_by_prefix()
+    else:
+        for filename in all_paths:
+            filepath = OUTPUT_DIR / filename
+            if filepath.exists():
+                filepath.unlink()
+                files_deleted += 1
 
     return {"episodes_deleted": episodes_deleted, "files_deleted": files_deleted}
-
-
-def _delete_all_from_backend(backend) -> None:
-    """Clear all episodes from a remote backend."""
-    raw = backend.read_feed()
-    if raw:
-        rss = _parse_feed_xml(raw)
-        channel = rss.find("channel")
-        for item in channel.findall("item"):
-            channel.remove(item)
-        backend.write_feed(_serialize_feed(rss))
-
-    backend.delete_files_by_prefix()

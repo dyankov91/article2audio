@@ -125,19 +125,75 @@ else
   echo "   ✅ Artwork saved to $ARTWORK_PATH"
 fi
 
-# ─── Local Server (launchd) ──────────────────────────────────────────────────
+# ─── Provider Choice ─────────────────────────────────────────────────────────
 
 echo ""
-echo "🌐 Setting up local podcast server..."
-echo "   Serves ~/A2Pod/ on your LAN so podcast apps can subscribe."
+EXISTING_PROVIDER=""
+if [[ -f "$CONFIG_DIR/config" ]]; then
+  EXISTING_PROVIDER=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg.get('publisher', 'provider', fallback=''))
+" 2>/dev/null)
+fi
 
 PYTHON_BIN="$(python3 -c 'import sys; print(sys.executable)')"
 PYTHON_DIR="$(dirname "$PYTHON_BIN")"
-SERVER_PLIST_PATH="$HOME/Library/LaunchAgents/com.a2pod.server.plist"
-SERVER_SCRIPT="$SCRIPT_DIR/bin/a2pod-server"
-SERVER_LOG="$CONFIG_DIR/server.log"
 
-cat > "$SERVER_PLIST_PATH" <<PLIST
+if [[ -n "$EXISTING_PROVIDER" ]]; then
+  echo "✅ Podcast provider: $EXISTING_PROVIDER"
+  PROVIDER="$EXISTING_PROVIDER"
+else
+  echo "📡 Choose your podcast provider:"
+  echo "   1) Local (serve on your LAN — default)"
+  echo "   2) AWS S3 (public access)"
+  echo ""
+  read -p "   Choose (1-2) [1]: " provider_choice
+  provider_choice="${provider_choice:-1}"
+
+  case "$provider_choice" in
+    2)
+      PROVIDER="s3"
+      ;;
+    *)
+      PROVIDER="local"
+      ;;
+  esac
+
+  mkdir -p "$CONFIG_DIR"
+  python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('publisher'):
+    cfg.add_section('publisher')
+cfg.set('publisher', 'provider', '$PROVIDER')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
+  echo "   ✅ Provider set to: $PROVIDER"
+fi
+
+# ─── Provider-specific setup ─────────────────────────────────────────────────
+
+if [[ "$PROVIDER" == "local" ]]; then
+  # Seed feed.xml if it doesn't exist yet
+  PYTHONPATH="$SCRIPT_DIR/lib" python3 -c "from publisher import ensure_feed_exists; ensure_feed_exists()"
+  echo "✅ Podcast feed ready"
+
+  # ─── Local Server (launchd) ──────────────────────────────────────────────
+
+  echo ""
+  echo "🌐 Setting up local podcast server..."
+  echo "   Serves ~/A2Pod/ on your LAN so podcast apps can subscribe."
+
+  SERVER_PLIST_PATH="$HOME/Library/LaunchAgents/com.a2pod.server.plist"
+  SERVER_SCRIPT="$SCRIPT_DIR/bin/a2pod-server"
+  SERVER_LOG="$CONFIG_DIR/server.log"
+
+  cat > "$SERVER_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -170,18 +226,215 @@ cat > "$SERVER_PLIST_PATH" <<PLIST
 </plist>
 PLIST
 
-launchctl bootout "gui/$(id -u)" "$SERVER_PLIST_PATH" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$SERVER_PLIST_PATH"
+  launchctl bootout "gui/$(id -u)" "$SERVER_PLIST_PATH" 2>/dev/null || true
+  launchctl bootstrap "gui/$(id -u)" "$SERVER_PLIST_PATH"
 
-HOSTNAME=$(python3 -c "
+  LAN_IP=$(python3 -c "
 import socket
-h = socket.gethostname()
-if not h.endswith('.local'): h += '.local'
-print(h)
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(('8.8.8.8', 80))
+    print(s.getsockname()[0])
+except Exception:
+    print('127.0.0.1')
+finally:
+    s.close()
 ")
-echo "   ✅ Server started (com.a2pod.server)"
-echo "   Feed URL: http://$HOSTNAME:8008/feed.xml"
-echo "   Logs: $SERVER_LOG"
+  echo "   ✅ Server started (com.a2pod.server)"
+  echo "   Feed URL: http://$LAN_IP:8008/feed.xml"
+  echo "   Logs: $SERVER_LOG"
+
+elif [[ "$PROVIDER" == "s3" ]]; then
+  # Stop local server if it was previously installed (no longer needed with S3)
+  SERVER_PLIST_PATH="$HOME/Library/LaunchAgents/com.a2pod.server.plist"
+  if [[ -f "$SERVER_PLIST_PATH" ]]; then
+    launchctl bootout "gui/$(id -u)" "$SERVER_PLIST_PATH" 2>/dev/null || true
+    rm -f "$SERVER_PLIST_PATH"
+    echo "✅ Stopped and removed local server (not needed with S3)"
+  fi
+
+  # ─── AWS S3 Setup ────────────────────────────────────────────────────────
+
+  echo ""
+  echo "☁️  Setting up AWS S3..."
+
+  # Check if already configured
+  if [[ -f "$CONFIG_DIR/config" ]] && python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+if 'aws' in cfg and cfg['aws'].get('profile') and cfg['aws'].get('bucket'):
+    import boto3
+    s = boto3.Session(profile_name=cfg['aws']['profile'])
+    assert s.get_credentials()
+" 2>/dev/null; then
+    EXISTING_PROFILE=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg['aws']['profile'])
+")
+    EXISTING_BUCKET=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg['aws']['bucket'])
+")
+    EXISTING_REGION=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg['aws']['region'])
+")
+    echo "✅ AWS already configured (profile: $EXISTING_PROFILE, bucket: $EXISTING_BUCKET)"
+    echo "   Feed: https://$EXISTING_BUCKET.s3.$EXISTING_REGION.amazonaws.com/feed.xml"
+
+    # Upload artwork to S3 if not already there
+    aws s3 cp "$ARTWORK_PATH" "s3://$EXISTING_BUCKET/artwork.jpg" \
+      --profile "$EXISTING_PROFILE" --content-type "image/jpeg" --quiet 2>/dev/null || true
+  else
+    echo ""
+
+    # Detect existing AWS profiles
+    PROFILES=""
+    if [[ -f "$HOME/.aws/credentials" ]]; then
+      PROFILES=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.aws/credentials'))
+for s in cfg.sections():
+    print(s)
+" 2>/dev/null)
+    fi
+
+    AWS_PROFILE=""
+    if [[ -n "$PROFILES" ]]; then
+      echo "   Existing AWS profiles found:"
+      i=1
+      while IFS= read -r p; do
+        echo "   $i) $p"
+        i=$((i + 1))
+      done <<< "$PROFILES"
+      echo "   $i) Enter new credentials"
+      echo ""
+      read -p "   Choose (1-$i): " choice
+
+      PROFILE_COUNT=$(echo "$PROFILES" | wc -l | tr -d ' ')
+      if [[ "$choice" -ge 1 && "$choice" -le "$PROFILE_COUNT" ]]; then
+        AWS_PROFILE=$(echo "$PROFILES" | sed -n "${choice}p")
+        echo "   Using profile: $AWS_PROFILE"
+      fi
+    fi
+
+    # If no profile selected, ask for new credentials
+    if [[ -z "$AWS_PROFILE" ]]; then
+      echo ""
+      read -p "   Profile name: " AWS_PROFILE
+      read -p "   AWS Access Key ID: " aws_key
+      read -s -p "   AWS Secret Access Key: " aws_secret
+      echo ""
+
+      mkdir -p ~/.aws
+      python3 -c "
+import configparser, os
+creds_path = os.path.expanduser('~/.aws/credentials')
+creds = configparser.ConfigParser()
+creds.read(creds_path)
+creds['$AWS_PROFILE'] = {
+    'aws_access_key_id': '$aws_key',
+    'aws_secret_access_key': '$aws_secret'
+}
+with open(creds_path, 'w') as f:
+    creds.write(f)
+"
+      echo "   ✅ Credentials saved to ~/.aws/credentials"
+    fi
+
+    # Get region from profile config or ask
+    AWS_REGION=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.aws/config'))
+section = 'profile $AWS_PROFILE' if '$AWS_PROFILE' != 'default' else 'default'
+print(cfg.get(section, 'region', fallback=''))
+" 2>/dev/null)
+
+    if [[ -z "$AWS_REGION" ]]; then
+      read -p "   AWS Region [eu-central-1]: " AWS_REGION
+      AWS_REGION="${AWS_REGION:-eu-central-1}"
+
+      python3 -c "
+import configparser, os
+cfg_path = os.path.expanduser('~/.aws/config')
+cfg = configparser.ConfigParser()
+cfg.read(cfg_path)
+section = 'profile $AWS_PROFILE' if '$AWS_PROFILE' != 'default' else 'default'
+if not cfg.has_section(section):
+    cfg.add_section(section)
+cfg.set(section, 'region', '$AWS_REGION')
+with open(cfg_path, 'w') as f:
+    cfg.write(f)
+"
+    else
+      echo "   Region: $AWS_REGION"
+    fi
+
+    # S3 bucket setup
+    echo ""
+    read -p "   S3 bucket name [my-podcast-feed]: " AWS_BUCKET
+    AWS_BUCKET="${AWS_BUCKET:-my-podcast-feed}"
+
+    # Check if bucket exists
+    if aws s3api head-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" 2>/dev/null; then
+      echo "   ✅ Bucket '$AWS_BUCKET' exists"
+    else
+      echo "   Creating bucket '$AWS_BUCKET'..."
+      if [[ "$AWS_REGION" == "us-east-1" ]]; then
+        aws s3api create-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" --region "$AWS_REGION"
+      else
+        aws s3api create-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+          --create-bucket-configuration LocationConstraint="$AWS_REGION"
+      fi
+      echo "   ✅ Bucket created"
+    fi
+
+    # Enable public read access
+    echo "   Configuring public access for podcast feed..."
+    aws s3api put-public-access-block --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" \
+      --public-access-block-configuration \
+      "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false" \
+      2>/dev/null || true
+
+    aws s3api put-bucket-policy --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" \
+      --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicRead\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::${AWS_BUCKET}/*\"}]}" \
+      2>/dev/null || true
+
+    # Save AWS config (preserve existing sections)
+    mkdir -p "$CONFIG_DIR"
+    python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('aws'):
+    cfg.add_section('aws')
+cfg.set('aws', 'profile', '$AWS_PROFILE')
+cfg.set('aws', 'bucket', '$AWS_BUCKET')
+cfg.set('aws', 'region', '$AWS_REGION')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
+
+    # Upload artwork to S3
+    aws s3 cp "$ARTWORK_PATH" "s3://$AWS_BUCKET/artwork.jpg" \
+      --profile "$AWS_PROFILE" --content-type "image/jpeg" --quiet 2>/dev/null || true
+
+    REMOTE_FEED_URL="https://$AWS_BUCKET.s3.$AWS_REGION.amazonaws.com/feed.xml"
+    echo ""
+    echo "   ✅ AWS S3 configured!"
+    echo "   Feed: $REMOTE_FEED_URL"
+  fi
+fi
 
 # ─── Optional: X API for posts ────────────────────────────────────────────────
 
@@ -356,196 +609,6 @@ with open(path, 'w') as f:
     ;;
 esac
 
-# ─── Optional: AWS / Remote sync ─────────────────────────────────────────────
-
-echo ""
-echo "📡 Optional: Enable remote sync via AWS S3?"
-echo "   Mirrors your podcast to S3 for public access outside your LAN."
-echo ""
-
-# Check if already configured
-if [[ -f "$CONFIG_DIR/config" ]] && python3 -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.config/a2pod/config'))
-if 'aws' in cfg and cfg['aws'].get('profile') and cfg['aws'].get('bucket'):
-    import boto3
-    s = boto3.Session(profile_name=cfg['aws']['profile'])
-    assert s.get_credentials()
-" 2>/dev/null; then
-  EXISTING_PROFILE=$(python3 -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.config/a2pod/config'))
-print(cfg['aws']['profile'])
-")
-  EXISTING_BUCKET=$(python3 -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.config/a2pod/config'))
-print(cfg['aws']['bucket'])
-")
-  EXISTING_REGION=$(python3 -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.config/a2pod/config'))
-print(cfg['aws']['region'])
-")
-  echo "✅ AWS already configured (profile: $EXISTING_PROFILE, bucket: $EXISTING_BUCKET)"
-  echo "   Remote feed: https://$EXISTING_BUCKET.s3.$EXISTING_REGION.amazonaws.com/feed.xml"
-
-  # Upload artwork to S3 if not already there
-  aws s3 cp "$ARTWORK_PATH" "s3://$EXISTING_BUCKET/artwork.jpg" \
-    --profile "$EXISTING_PROFILE" --content-type "image/jpeg" --quiet 2>/dev/null || true
-else
-  read -p "   Set up AWS for remote sync? (y/n): " setup_aws
-  if [[ "$setup_aws" =~ ^[Yy]$ ]]; then
-    echo ""
-
-    # Detect existing AWS profiles
-    PROFILES=""
-    if [[ -f "$HOME/.aws/credentials" ]]; then
-      PROFILES=$(python3 -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.aws/credentials'))
-for s in cfg.sections():
-    print(s)
-" 2>/dev/null)
-    fi
-
-    AWS_PROFILE=""
-    if [[ -n "$PROFILES" ]]; then
-      echo "   Existing AWS profiles found:"
-      i=1
-      while IFS= read -r p; do
-        echo "   $i) $p"
-        i=$((i + 1))
-      done <<< "$PROFILES"
-      echo "   $i) Enter new credentials"
-      echo ""
-      read -p "   Choose (1-$i): " choice
-
-      PROFILE_COUNT=$(echo "$PROFILES" | wc -l | tr -d ' ')
-      if [[ "$choice" -ge 1 && "$choice" -le "$PROFILE_COUNT" ]]; then
-        AWS_PROFILE=$(echo "$PROFILES" | sed -n "${choice}p")
-        echo "   Using profile: $AWS_PROFILE"
-      fi
-    fi
-
-    # If no profile selected, ask for new credentials
-    if [[ -z "$AWS_PROFILE" ]]; then
-      echo ""
-      read -p "   Profile name: " AWS_PROFILE
-      read -p "   AWS Access Key ID: " aws_key
-      read -s -p "   AWS Secret Access Key: " aws_secret
-      echo ""
-
-      mkdir -p ~/.aws
-      python3 -c "
-import configparser, os
-creds_path = os.path.expanduser('~/.aws/credentials')
-creds = configparser.ConfigParser()
-creds.read(creds_path)
-creds['$AWS_PROFILE'] = {
-    'aws_access_key_id': '$aws_key',
-    'aws_secret_access_key': '$aws_secret'
-}
-with open(creds_path, 'w') as f:
-    creds.write(f)
-"
-      echo "   ✅ Credentials saved to ~/.aws/credentials"
-    fi
-
-    # Get region from profile config or ask
-    AWS_REGION=$(python3 -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.aws/config'))
-section = 'profile $AWS_PROFILE' if '$AWS_PROFILE' != 'default' else 'default'
-print(cfg.get(section, 'region', fallback=''))
-" 2>/dev/null)
-
-    if [[ -z "$AWS_REGION" ]]; then
-      read -p "   AWS Region [eu-central-1]: " AWS_REGION
-      AWS_REGION="${AWS_REGION:-eu-central-1}"
-
-      python3 -c "
-import configparser, os
-cfg_path = os.path.expanduser('~/.aws/config')
-cfg = configparser.ConfigParser()
-cfg.read(cfg_path)
-section = 'profile $AWS_PROFILE' if '$AWS_PROFILE' != 'default' else 'default'
-if not cfg.has_section(section):
-    cfg.add_section(section)
-cfg.set(section, 'region', '$AWS_REGION')
-with open(cfg_path, 'w') as f:
-    cfg.write(f)
-"
-    else
-      echo "   Region: $AWS_REGION"
-    fi
-
-    # S3 bucket setup
-    echo ""
-    read -p "   S3 bucket name [my-podcast-feed]: " AWS_BUCKET
-    AWS_BUCKET="${AWS_BUCKET:-my-podcast-feed}"
-
-    # Check if bucket exists
-    if aws s3api head-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" 2>/dev/null; then
-      echo "   ✅ Bucket '$AWS_BUCKET' exists"
-    else
-      echo "   Creating bucket '$AWS_BUCKET'..."
-      if [[ "$AWS_REGION" == "us-east-1" ]]; then
-        aws s3api create-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" --region "$AWS_REGION"
-      else
-        aws s3api create-bucket --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-          --create-bucket-configuration LocationConstraint="$AWS_REGION"
-      fi
-      echo "   ✅ Bucket created"
-    fi
-
-    # Enable public read access
-    echo "   Configuring public access for podcast feed..."
-    aws s3api put-public-access-block --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" \
-      --public-access-block-configuration \
-      "BlockPublicAcls=false,IgnorePublicAcls=false,BlockPublicPolicy=false,RestrictPublicBuckets=false" \
-      2>/dev/null || true
-
-    aws s3api put-bucket-policy --bucket "$AWS_BUCKET" --profile "$AWS_PROFILE" \
-      --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicRead\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::${AWS_BUCKET}/*\"}]}" \
-      2>/dev/null || true
-
-    # Save AWS config (preserve existing sections)
-    mkdir -p "$CONFIG_DIR"
-    python3 -c "
-import configparser, os
-path = os.path.expanduser('~/.config/a2pod/config')
-cfg = configparser.ConfigParser()
-cfg.read(path)
-if not cfg.has_section('aws'):
-    cfg.add_section('aws')
-cfg.set('aws', 'profile', '$AWS_PROFILE')
-cfg.set('aws', 'bucket', '$AWS_BUCKET')
-cfg.set('aws', 'region', '$AWS_REGION')
-with open(path, 'w') as f:
-    cfg.write(f)
-"
-
-    # Upload artwork to S3
-    aws s3 cp "$ARTWORK_PATH" "s3://$AWS_BUCKET/artwork.jpg" \
-      --profile "$AWS_PROFILE" --content-type "image/jpeg" --quiet 2>/dev/null || true
-
-    REMOTE_FEED_URL="https://$AWS_BUCKET.s3.$AWS_REGION.amazonaws.com/feed.xml"
-    echo ""
-    echo "   ✅ AWS remote sync configured!"
-    echo "   Remote feed: $REMOTE_FEED_URL"
-  else
-    echo "   Skipped. Your podcast is available on your LAN via the local server."
-    echo "   Run install.sh again to set up remote sync later."
-  fi
-fi
-
 # ─── Optional: Telegram Bot ──────────────────────────────────────────────────
 
 echo ""
@@ -706,6 +769,34 @@ echo ""
 echo "📌 Usage:"
 echo "  a2pod https://some-article.com"
 echo ""
-echo "🎧 Subscribe in any podcast app:"
-echo "  http://$HOSTNAME:8008/feed.xml"
+if [[ "$PROVIDER" == "s3" ]]; then
+  AWS_BUCKET_FINAL=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg.get('aws', 'bucket', fallback=''))
+" 2>/dev/null)
+  AWS_REGION_FINAL=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg.get('aws', 'region', fallback=''))
+" 2>/dev/null)
+  echo "🎧 Subscribe in any podcast app:"
+  echo "  https://$AWS_BUCKET_FINAL.s3.$AWS_REGION_FINAL.amazonaws.com/feed.xml"
+else
+  LAN_IP=$(python3 -c "
+import socket
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+try:
+    s.connect(('8.8.8.8', 80))
+    print(s.getsockname()[0])
+except Exception:
+    print('127.0.0.1')
+finally:
+    s.close()
+")
+  echo "🎧 Subscribe in any podcast app:"
+  echo "  http://$LAN_IP:8008/feed.xml"
+fi
 echo ""

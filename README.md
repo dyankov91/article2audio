@@ -1,19 +1,17 @@
 # A2Pod
 
-Convert articles into audio you can listen to anywhere. Generates natural-sounding speech locally on Apple Silicon, maintains a local podcast feed you can subscribe to from any device on your network, and optionally mirrors to S3 for public access.
+Convert articles into audio you can listen to anywhere. Generates natural-sounding speech locally on Apple Silicon, publishes to a podcast feed, and supports either a local LAN server or AWS S3 as the podcast provider.
 
 ```
-URL / file / text  →  Extract  →  Clean  →  Summarize  →  Chunk  →  TTS  →  Intro  →  M4A  →  Local Feed
+URL / file / text  →  Extract  →  Clean  →  Summarize  →  Chunk  →  TTS  →  Intro  →  M4A  →  Podcast Feed
                                 (regex+LLM)  (LexRank+LLM)       (Kokoro)  (jingle)       (+ VTT transcript)
-                                                                                                    ↓
-                                                                                              S3 (optional)
 ```
 
 > **Disclaimer** — This tool is designed for personal use with content you already have access to. Respect copyright: do not redistribute generated audio unless you own the source content or have permission to do so.
 
 ## Features
 
-- **Local-first** — no cloud accounts needed; a local HTTP server serves your podcast feed on the LAN
+- **Single provider** — choose Local (LAN server) or S3 (public access) during setup; all operations target one provider
 - **Any URL** — articles, blog posts, newsletters, X/Twitter posts and long-form articles
 - **Local text** — convert `.txt` files or paste text directly (Telegram bot)
 - **Episode intros** — programmatic chime jingle + spoken title before content
@@ -23,7 +21,6 @@ URL / file / text  →  Extract  →  Clean  →  Summarize  →  Chunk  →  TT
 - **WebVTT transcripts** — per-chunk timestamped transcript generated alongside every audio file
 - **Apple Silicon TTS** — Kokoro-82M via MLX Audio, 7 voices, parallel workers
 - **Podcast feed** — RSS 2.0 with iTunes and Podcast Index extensions; subscribe once in any podcast app
-- **Remote sync** — optionally mirrors to S3 (or future backends like Google Drive) for access outside your LAN
 - **Telegram bot** — send URLs, paste text, or upload `.txt` files; live progress updates, inline voice/model switching
 - **Deduplication** — skips URLs already in the podcast feed (override with `--force`)
 - **Episode management** — delete single episodes or bulk-clear the entire feed
@@ -34,7 +31,7 @@ URL / file / text  →  Extract  →  Clean  →  Summarize  →  Chunk  →  TT
 - Python 3.10+
 - ~500 MB disk for model + dependencies
 - X API bearer token (optional, for X/Twitter posts)
-- AWS account (optional, for remote podcast sync)
+- AWS account (optional, for S3 provider)
 - LLM provider (optional, for summaries and text cleaning): [Ollama](https://ollama.com) (local), [OpenAI API](https://platform.openai.com), or [Anthropic API](https://console.anthropic.com)
 
 ## Quick Start
@@ -45,7 +42,7 @@ cd a2pod
 ./install.sh
 ```
 
-The installer handles dependencies, model download, PATH setup, podcast artwork, local server, and optional AWS / Telegram bot configuration. No AWS account needed — the local server starts automatically.
+The installer handles dependencies, model download, PATH setup, podcast artwork, **provider choice** (Local or S3), and optional Telegram bot configuration.
 
 Then:
 
@@ -53,12 +50,12 @@ Then:
 a2pod https://example.com/some-article
 ```
 
-Your podcast feed is immediately available at `http://<your-mac>.local:8008/feed.xml`. Subscribe from any podcast app on a device connected to the same Wi-Fi.
+Your podcast feed is immediately available at the URL shown during setup. Subscribe from any podcast app.
 
 ## Usage
 
 ```bash
-# Basic — converts and publishes to local podcast feed
+# Basic — converts and publishes to the podcast feed
 a2pod https://example.com/article
 
 # Custom voice
@@ -69,9 +66,6 @@ a2pod https://example.com/article --speed 1.2
 
 # From a local text file
 a2pod --file article.txt --title "My Article"
-
-# Skip remote sync (local feed is always updated)
-a2pod https://example.com/article --no-upload
 
 # Custom output path
 a2pod https://example.com/article --output ~/Desktop/article.m4a
@@ -104,7 +98,6 @@ a2pod https://example.com/article --model mistral
 | `--output` | `-o` | Custom output path |
 | `--model` | `-m` | LLM model override |
 | `--workers` | `-w` | Parallel TTS workers (default: `2`) |
-| `--no-upload` | | Skip remote sync (local feed is always updated) |
 | `--no-summary` | | Skip episode summary generation |
 | `--no-intro` | | Skip episode intro (jingle + spoken title) |
 | `--force` | | Reprocess even if already in the podcast feed |
@@ -130,40 +123,45 @@ The installer can also set this up for you during `./install.sh`.
 
 ## Podcast Setup
 
-Every article you convert is automatically added to your local podcast feed. Subscribe from any podcast app on a device connected to the same Wi-Fi network.
+Every article you convert is automatically added to your podcast feed. During `./install.sh` you choose a provider:
 
 ### Local (default)
 
-1. Open any podcast app on your phone (Apple Podcasts, Overcast, etc.)
+Runs a local HTTP server on your LAN. No cloud accounts needed.
+
+1. Open a podcast app on your phone (Overcast, Pocket Casts, Castro, etc.)
 2. Add by URL / Subscribe to URL:
    ```
-   http://<your-mac>.local:8008/feed.xml
+   http://<lan-ip>:8008/feed.xml
    ```
 3. Every new article you convert will appear as an episode
 
 > **Note:** Your phone/tablet must be on the same Wi-Fi network as the Mac running the server.
 
-### Remote via AWS S3 (optional)
+> **Apple Podcasts limitation:** Apple Podcasts requires a public HTTPS URL and will not work with LAN addresses. Use [Overcast](https://overcast.fm), [Pocket Casts](https://pocketcasts.com), [Castro](https://castro.fm), or another podcast app that supports custom feed URLs for the local provider.
 
-For access outside your LAN, configure AWS S3 as a remote mirror during `./install.sh` or add manually:
+### AWS S3
+
+For public access from anywhere. When using S3 as the provider, local `.m4a` and `.vtt` files are automatically deleted after successful upload to save disk space.
 
 ```ini
+[publisher]
+provider = s3
+
 [aws]
 profile = default
 bucket = my-podcast-feed
 region = us-east-1
 ```
 
-When configured, episodes are synced to S3 automatically after the local feed is updated. The public S3 feed URL is:
+The public S3 feed URL is:
 ```
 https://<your-bucket>.s3.<your-region>.amazonaws.com/feed.xml
 ```
 
-Use `--no-upload` to skip remote sync for a single run.
-
 ### Local Server
 
-The installer sets up a launchd service (`com.a2pod.server`) that runs automatically whenever your Mac is on.
+When using the local provider, the installer sets up a launchd service (`com.a2pod.server`) that runs automatically whenever your Mac is on.
 
 ```bash
 # Check status
@@ -212,7 +210,7 @@ Multiple user IDs can be comma-separated. Only listed users can interact with th
 | `/model` | Show or switch LLM provider and model (inline keyboard) |
 | `/speed` | Show or set speech speed |
 | `/workers` | Show or set TTS worker count |
-| `/feed` | Get the podcast feed URLs (local + remote) |
+| `/feed` | Get the podcast feed URL |
 | `/status` | Bot status, uptime, version, active jobs |
 | `/delete` | Remove a single episode (with confirmation) |
 | `/deleteall` | Remove all episodes |
@@ -253,12 +251,15 @@ a2pod-bot
 All configuration lives in `~/.config/a2pod/config` (INI format). The installer creates this file for you.
 
 ```ini
+[publisher]
+provider = local                      # 'local' or 's3'
+
 [podcast]
 name = A2Pod                   # Podcast title in feed and episode intros
 
 [server]
-port = 8008                            # Local HTTP server port
-# hostname = custom.local              # Override auto-detected hostname
+port = 8008                            # Local HTTP server port (local provider only)
+# hostname = 192.168.1.50              # Override auto-detected LAN IP
 
 [llm]
 provider = ollama                      # ollama, openai, or anthropic
@@ -277,7 +278,7 @@ allowed_users = 123456789,987654321    # Comma-separated allowed user IDs
 [x]
 bearer_token = YOUR_TOKEN_HERE         # X/Twitter API v2 bearer token
 
-[aws]                                  # Optional — remote sync
+[aws]                                  # Required when provider = s3
 profile = default                      # AWS CLI profile name
 bucket = my-podcast-feed               # S3 bucket name
 region = us-east-1                     # AWS region
@@ -341,13 +342,13 @@ You can store API keys for multiple providers and switch between them at runtime
 6. **TTS** — Kokoro-82M generates WAV audio for each chunk in parallel (configurable worker count)
 7. **Intro** — synthesizes a C-major chime jingle + spoken "[Podcast Name] presents: [Title]" + brief silence
 8. **Assemble** — ffmpeg concatenates all WAVs into a single M4A with metadata; builds a WebVTT transcript with timestamps
-9. **Publish** — updates local feed.xml, then syncs M4A and VTT to configured remote backends (S3, etc.)
+9. **Publish** — updates the podcast feed on the active provider; when using S3, uploads files and cleans up local copies
 
 ## Project Structure
 
 ```
 a2pod/
-├── install.sh                 # One-time setup (deps, model, server, AWS, Telegram)
+├── install.sh                 # One-time setup (deps, model, provider choice, Telegram)
 ├── bin/
 │   ├── a2pod          # Main CLI
 │   ├── a2pod-bot      # Telegram bot entry point
@@ -364,11 +365,11 @@ a2pod/
 │   ├── intro.py               # Episode intro (jingle + spoken title)
 │   ├── assembler.py           # Audio concat + M4A encoding + VTT transcripts
 │   ├── artwork.py             # Podcast cover image generation
-│   ├── publisher.py           # Local feed management + remote backend sync
+│   ├── publisher.py           # Single-provider feed management
 │   ├── server.py              # HTTP server for ~/A2Pod/
 │   ├── telegram_bot.py        # Telegram bot handlers + polling
 │   └── backends/
-│       ├── __init__.py        # RemoteBackend ABC + get_configured_backends()
+│       ├── __init__.py        # RemoteBackend ABC + get_active_backend()
 │       └── s3.py              # AWS S3 backend implementation
 └── README.md
 ```
@@ -377,22 +378,13 @@ a2pod/
 
 ```
 ~/A2Pod/
-├── feed.xml                       # Local podcast feed
+├── feed.xml                       # Podcast feed (local provider only)
 ├── artwork.jpg                    # Podcast artwork
-├── Episode_Title_20260302.m4a     # Audio files
-└── Episode_Title_20260302.vtt     # VTT transcripts
+├── Episode_Title_20260302.m4a     # Audio files (local provider; deleted after S3 upload)
+└── Episode_Title_20260302.vtt     # VTT transcripts (local provider; deleted after S3 upload)
 ```
 
-The local server serves this directory on `http://<your-mac>.local:8008/`. When AWS is configured, files are also mirrored to `s3://<your-bucket>/audiobooks/`.
-
-## Adding a Remote Backend
-
-To add a new remote storage provider (e.g. Google Drive):
-
-1. Create `lib/backends/gdrive.py` implementing `RemoteBackend`
-2. Add a `[gdrive]` config section
-3. Register it in `backends/__init__.py`'s `get_configured_backends()`
-4. No changes needed to publisher.py, pipeline.py, or any other file
+When using the local provider, the server serves this directory on `http://<lan-ip>:8008/`. When using S3, files are uploaded to `s3://<your-bucket>/audiobooks/` and local copies are removed.
 
 ## Contributing
 
