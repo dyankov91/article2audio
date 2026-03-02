@@ -131,7 +131,8 @@ def _add_feed_item(rss: ET.Element, title: str, s3_key: str,
                    duration_seconds: int | None = None,
                    source_url: str | None = None,
                    summary: str | None = None,
-                   transcript_url: str | None = None) -> None:
+                   transcript_url: str | None = None,
+                   voice_name: str | None = None) -> None:
     """Prepend a new <item> to the RSS channel (newest first)."""
     channel = rss.find("channel")
     enclosure_url = f"{base_url}/{s3_key}"
@@ -140,6 +141,8 @@ def _add_feed_item(rss: ET.Element, title: str, s3_key: str,
     ET.SubElement(item, "title").text = title
     ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = enclosure_url
     ET.SubElement(item, "pubDate").text = formatdate(usegmt=True)
+    if voice_name:
+        ET.SubElement(item, "{%s}author" % ITUNES_NS).text = voice_name
     if source_url:
         domain = urlparse(source_url).netloc.removeprefix("www.")
         ET.SubElement(item, "{%s}subtitle" % ITUNES_NS).text = domain
@@ -206,7 +209,8 @@ def find_existing_episode(url: str) -> dict | None:
 
 def upload_audiobook(local_path: str, title: str, source_url: str | None = None,
                      summary: str | None = None,
-                     transcript_path: str | None = None) -> str:
+                     transcript_path: str | None = None,
+                     voice_name: str | None = None) -> str:
     """Upload audio to S3 and update the podcast feed. Returns the public URL."""
     s3, config = _get_s3_client()
     base_url = _base_url(config)
@@ -247,7 +251,7 @@ def upload_audiobook(local_path: str, title: str, source_url: str | None = None,
 
     duration = _get_duration_seconds(local_path)
     _add_feed_item(rss, title, s3_key, file_size, base_url, duration, source_url, summary,
-                   transcript_url)
+                   transcript_url, voice_name)
 
     _upload_feed(s3, config, rss)
 

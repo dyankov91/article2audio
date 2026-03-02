@@ -12,7 +12,7 @@ from extractor import extract_from_url, extract_from_file, is_x_url
 from cleaner import clean_for_audio, llm_clean_for_audio
 from summarizer import get_summary
 from chunker import chunk_text
-from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED, DEFAULT_WORKERS
+from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED, DEFAULT_WORKERS, VOICES
 from assembler import concat_to_m4b, build_transcript_vtt
 from intro import generate_intro, get_intro_duration
 from publisher import is_aws_configured, upload_audiobook, get_feed_url, find_existing_episode
@@ -187,7 +187,9 @@ def run_pipeline(
     # Upload to S3 and update podcast feed
     if will_upload:
         progress("Publishing to podcast feed...")
-        audio_url = upload_audiobook(output_path, resolved_title, source_url, summary, vtt_path)
+        voice_name = VOICES.get(voice, (voice,))[0]
+        audio_url = upload_audiobook(output_path, resolved_title, source_url, summary, vtt_path,
+                                     voice_name=voice_name)
         feed_url = get_feed_url()
         result["feed_url"] = feed_url
         result["audio_url"] = audio_url
