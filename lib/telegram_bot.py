@@ -32,6 +32,7 @@ _STATUS_MAP = {
     "Cleaning text...": "Cleaning text...",
     "Text cleaned.": "Cleaning text [done]",
     "Generating summary...": "Generating summary...",
+    "Generating episode intro...": "Generating intro...",
     "Encoding M4A...": "Encoding audio...",
     "Publishing to podcast feed...": "Publishing...",
 }

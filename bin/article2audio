@@ -55,6 +55,8 @@ def main():
                         help="Skip episode summary generation")
     parser.add_argument("--workers", "-w", type=int, default=DEFAULT_WORKERS,
                         help=f"Parallel TTS workers (default: {DEFAULT_WORKERS})")
+    parser.add_argument("--no-intro", action="store_true",
+                        help="Skip episode intro (jingle + spoken title)")
     parser.add_argument("--force", action="store_true",
                         help="Reprocess even if already in the podcast feed")
     parser.add_argument("--delete", metavar="QUERY",
@@ -110,6 +112,7 @@ def main():
             model=args.model,
             no_upload=args.no_upload,
             no_summary=args.no_summary,
+            no_intro=args.no_intro,
             output=args.output,
             force=args.force,
             workers=args.workers,

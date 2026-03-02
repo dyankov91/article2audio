@@ -49,14 +49,18 @@ def concat_to_m4b(wav_files: list[str], output_path: str, title: str) -> None:
     )
 
 
-def build_transcript_vtt(chunks: list[str], wav_files: list[str], output_path: str) -> str:
+def build_transcript_vtt(
+    chunks: list[str], wav_files: list[str], output_path: str,
+    intro_offset: float = 0.0,
+) -> str:
     """Build a WebVTT transcript from text chunks and their corresponding WAV files.
 
     Reads each WAV's duration to produce cumulative timestamps.
+    intro_offset shifts all timestamps forward to account for episode intro.
     Returns output_path.
     """
     cues = []
-    offset = 0.0
+    offset = intro_offset
     for chunk_text, wav_path in zip(chunks, wav_files):
         with wave.open(wav_path, "rb") as wf:
             duration = wf.getnframes() / wf.getframerate()

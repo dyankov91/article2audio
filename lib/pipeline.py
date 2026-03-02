@@ -1,5 +1,6 @@
 """Pipeline orchestration — runs the full article-to-audio conversion."""
 
+import configparser
 import os
 import re
 import tempfile
@@ -13,7 +14,10 @@ from summarizer import get_summary
 from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED, DEFAULT_WORKERS
 from assembler import concat_to_m4b, build_transcript_vtt
+from intro import generate_intro, get_intro_duration
 from publisher import is_aws_configured, upload_audiobook, get_feed_url, find_existing_episode
+
+_CONFIG_PATH = os.path.expanduser("~/.config/a2pod/config")
 
 OUTPUT_DIR = Path.home() / "A2Pod"
 
@@ -25,6 +29,13 @@ def sanitize_filename(title: str) -> str:
     return clean[:80] or "article"
 
 
+def _load_podcast_name() -> str:
+    """Read [podcast] name from config."""
+    cfg = configparser.ConfigParser()
+    cfg.read(_CONFIG_PATH)
+    return cfg.get("podcast", "name", fallback="A2Pod")
+
+
 def run_pipeline(
     url: str | None = None,
     file_path: str | None = None,
@@ -34,6 +45,7 @@ def run_pipeline(
     model: str | None = None,
     no_upload: bool = False,
     no_summary: bool = False,
+    no_intro: bool = False,
     output: str | None = None,
     force: bool = False,
     workers: int = DEFAULT_WORKERS,
@@ -105,11 +117,24 @@ def run_pipeline(
 
     # Generate audio
     with tempfile.TemporaryDirectory() as tmpdir:
-        wav_files = generate_audio_chunks(
+        content_wavs = generate_audio_chunks(
             chunks, voice, speed, tmpdir,
             on_progress=lambda msg: progress(msg.strip()),
             workers=workers,
         )
+
+        # Generate episode intro (jingle + spoken title + silence)
+        intro_offset = 0.0
+        if not no_intro:
+            progress("Generating episode intro...")
+            podcast_name = _load_podcast_name()
+            intro_wavs = generate_intro(
+                resolved_title, voice, speed, tmpdir, podcast_name,
+            )
+            intro_offset = get_intro_duration(intro_wavs)
+            wav_files = intro_wavs + content_wavs
+        else:
+            wav_files = content_wavs
 
         OUTPUT_DIR.mkdir(exist_ok=True)
         filename = sanitize_filename(resolved_title)
@@ -119,9 +144,9 @@ def run_pipeline(
         progress("Encoding M4A...")
         concat_to_m4b(wav_files, output_path, resolved_title)
 
-        # Build VTT transcript from chunks + WAV durations
+        # Build VTT transcript from chunks + content WAV durations
         vtt_path = output_path.replace(".m4a", ".vtt")
-        build_transcript_vtt(chunks, wav_files, vtt_path)
+        build_transcript_vtt(chunks, content_wavs, vtt_path, intro_offset=intro_offset)
 
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     progress(f"Saved: {output_path} ({size_mb:.1f} MB)")
