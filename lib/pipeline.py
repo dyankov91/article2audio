@@ -4,6 +4,7 @@ import configparser
 import os
 import re
 import tempfile
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -135,29 +136,63 @@ def run_pipeline(
 
     # Generate audio
     with tempfile.TemporaryDirectory() as tmpdir:
-        content_wavs = generate_audio_chunks(
-            chunks, voice, speed, tmpdir,
-            on_progress=lambda msg: progress(msg.strip()),
-            workers=workers,
-        )
+        # When workers >= 2, content TTS runs in child processes via
+        # ProcessPoolExecutor, so intro TTS can safely run in the main
+        # process in parallel.  When workers <= 1 or only one chunk,
+        # content TTS runs in the main process (sequential fallback),
+        # so we keep intro sequential to avoid MLX contention.
+        parallel_intro = not no_intro and workers >= 2 and len(chunks) > 1
 
-        progress("Audio done.")
+        if parallel_intro:
+            from concurrent.futures import ThreadPoolExecutor
 
-        # Generate episode intro (jingle + spoken title + silence)
-        intro_offset = 0.0
-        if not no_intro:
-            progress("Generating episode intro...")
             podcast_name = _load_podcast_name()
-            intro_wavs = generate_intro(
-                resolved_title, voice, speed, tmpdir, podcast_name,
-            )
+            progress("Generating episode intro...")
+
+            _progress_lock = threading.Lock()
+
+            def _thread_safe_progress(msg: str) -> None:
+                with _progress_lock:
+                    progress(msg.strip())
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                content_future = pool.submit(
+                    generate_audio_chunks,
+                    chunks, voice, speed, tmpdir,
+                    on_progress=_thread_safe_progress,
+                    workers=workers,
+                )
+                intro_future = pool.submit(
+                    generate_intro,
+                    resolved_title, voice, speed, tmpdir, podcast_name,
+                )
+                content_wavs = content_future.result()
+                intro_wavs = intro_future.result()
+
+            progress("Audio done.")
             intro_offset = get_intro_duration(intro_wavs)
             wav_files = intro_wavs + content_wavs
-        else:
-            wav_files = content_wavs
-
-        if not no_intro:
             progress("Intro done.")
+        else:
+            content_wavs = generate_audio_chunks(
+                chunks, voice, speed, tmpdir,
+                on_progress=lambda msg: progress(msg.strip()),
+                workers=workers,
+            )
+            progress("Audio done.")
+
+            intro_offset = 0.0
+            if not no_intro:
+                progress("Generating episode intro...")
+                podcast_name = _load_podcast_name()
+                intro_wavs = generate_intro(
+                    resolved_title, voice, speed, tmpdir, podcast_name,
+                )
+                intro_offset = get_intro_duration(intro_wavs)
+                wav_files = intro_wavs + content_wavs
+                progress("Intro done.")
+            else:
+                wav_files = content_wavs
 
         OUTPUT_DIR.mkdir(exist_ok=True)
         filename = sanitize_filename(resolved_title)
