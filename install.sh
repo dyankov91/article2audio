@@ -37,7 +37,7 @@ fi
 # Python packages
 echo "📦 Installing Python packages..."
 pip3 install --upgrade pip --quiet
-pip3 install mlx-audio trafilatura soundfile "misaki[en]" phonemizer espeakng_loader boto3 mutagen Pillow python-telegram-bot --quiet
+pip3 install mlx-audio trafilatura soundfile "misaki[en]" phonemizer espeakng_loader boto3 mutagen Pillow python-telegram-bot num2words --quiet
 
 # Pre-download Kokoro model
 echo "🧠 Downloading Kokoro TTS model (~160MB)..."
