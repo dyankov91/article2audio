@@ -4,8 +4,10 @@ import asyncio
 import configparser
 import logging
 import os
+import platform
 import re
 import signal
+import subprocess
 import time
 from functools import partial
 from pathlib import Path
@@ -23,6 +25,21 @@ from publisher import get_feed_url, find_episode, list_episodes, delete_episode,
 _CONFIG_PATH = Path.home() / ".config" / "a2pod" / "config"
 
 logger = logging.getLogger(__name__)
+
+
+def _get_git_version() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+            cwd=Path(__file__).resolve().parent.parent,
+        )
+        return result.stdout.strip() if result.returncode == 0 else "unknown"
+    except Exception:
+        return "unknown"
+
+
+_GIT_VERSION = _get_git_version()
 
 # Map pipeline progress messages to short user-facing status lines.
 # Only messages matching a key here produce a status update in Telegram.
@@ -88,6 +105,7 @@ async def _start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "Send me an article URL and I'll convert it to audio for the podcast feed.\n\n"
         "/model — show or switch LLM provider\n"
         "/feed — get the podcast feed URL\n"
+        "/status — bot status and debug info\n"
         "/delete <title or URL> — remove an episode\n"
         "/deleteall — remove all episodes\n"
         "/restart — restart the bot\n"
@@ -109,6 +127,7 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "/model <provider> — switch provider (ollama, openai, anthropic)\n"
         "/model <provider> <model> — switch provider and model\n"
         "/feed — get the podcast feed URL\n"
+        "/status — bot status and debug info\n"
         "/delete <title or URL> — remove an episode\n"
         "/deleteall — remove all episodes"
     )
@@ -168,6 +187,43 @@ async def _model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                      update.effective_user.username or update.effective_user.id)
     except ValueError as e:
         await update.message.reply_text(f"Error: {e}")
+
+
+async def _status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    allowed = context.bot_data["allowed_users"]
+    if not _is_authorized(update.effective_user.id, allowed):
+        return await _reject_unauthorized(update)
+
+    started_at = context.bot_data.get("started_at", 0)
+    uptime_secs = int(time.time() - started_at) if started_at else 0
+    days, rem = divmod(uptime_secs, 86400)
+    hours, rem = divmod(rem, 3600)
+    mins, secs = divmod(rem, 60)
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if mins:
+        parts.append(f"{mins}m")
+    parts.append(f"{secs}s")
+    uptime_str = " ".join(parts)
+
+    started_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(started_at)) if started_at else "unknown"
+
+    provider, model = get_provider_info()
+    active_jobs: set = context.bot_data.get("active_jobs", set())
+
+    lines = [
+        "Status: Running",
+        f"Version: {_GIT_VERSION}",
+        f"Uptime: {uptime_str}",
+        f"Started: {started_str}",
+        f"LLM: {provider} / {model}",
+        f"Active jobs: {len(active_jobs)}",
+        f"Python: {platform.python_version()} ({platform.machine()})",
+    ]
+    await update.message.reply_text("\n".join(lines))
 
 
 def _run_pipeline_sync(url: str, loop: asyncio.AbstractEventLoop, chat_id: int,
@@ -412,12 +468,26 @@ def run_bot() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    app = Application.builder().token(token).build()
+    async def _post_init(application: Application) -> None:
+        await application.bot.set_my_commands([
+            ("start", "Start the bot"),
+            ("model", "Show or switch LLM provider"),
+            ("feed", "Get the podcast feed URL"),
+            ("status", "Bot status and debug info"),
+            ("delete", "Remove an episode"),
+            ("deleteall", "Remove all episodes"),
+            ("restart", "Restart the bot"),
+            ("help", "How to use this bot"),
+        ])
+
+    app = Application.builder().token(token).post_init(_post_init).build()
     app.bot_data["allowed_users"] = allowed
+    app.bot_data["started_at"] = time.time()
 
     app.add_handler(CommandHandler("start", _start))
     app.add_handler(CommandHandler("help", _help))
     app.add_handler(CommandHandler("feed", _feed))
+    app.add_handler(CommandHandler("status", _status))
     app.add_handler(CommandHandler("delete", _delete))
     app.add_handler(CommandHandler("deleteall", _deleteall))
     app.add_handler(CommandHandler("restart", _restart))
