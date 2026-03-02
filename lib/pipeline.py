@@ -16,7 +16,7 @@ from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED, DEFAULT_WORKERS, VOICES
 from assembler import concat_to_m4b, build_transcript_vtt
 from intro import generate_intro, get_intro_duration
-from publisher import is_aws_configured, upload_audiobook, get_feed_url, find_existing_episode
+from publisher import publish_episode, find_existing_episode
 
 _CONFIG_PATH = os.path.expanduser("~/.config/a2pod/config")
 
@@ -84,10 +84,6 @@ def run_pipeline(
         if existing:
             progress("Already processed — returning existing episode.")
             return existing
-
-    # Check upload capability early
-    aws_ready = is_aws_configured()
-    will_upload = aws_ready and not no_upload
 
     # Extract text
     source_url = None
@@ -219,17 +215,14 @@ def run_pipeline(
         "summary": summary,
     }
 
-    # Upload to S3 and update podcast feed
-    if will_upload:
-        progress("Publishing to podcast feed...")
-        voice_name = VOICES.get(voice, (voice,))[0]
-        audio_url = upload_audiobook(output_path, resolved_title, source_url, summary, vtt_path,
-                                     voice_name=voice_name)
-        feed_url = get_feed_url()
-        result["feed_url"] = feed_url
-        result["audio_url"] = audio_url
-        progress("Publishing done.")
-        progress(f"Published. Feed: {feed_url}")
+    # Publish to local feed (always) and remote backends (unless --no-upload)
+    progress("Publishing to podcast feed...")
+    voice_name = VOICES.get(voice, (voice,))[0]
+    feed_url = publish_episode(output_path, resolved_title, source_url, summary, vtt_path,
+                               voice_name=voice_name, no_upload=no_upload)
+    result["feed_url"] = feed_url
+    progress("Publishing done.")
+    progress(f"Published. Feed: {feed_url}")
 
     progress("Done.")
     return result

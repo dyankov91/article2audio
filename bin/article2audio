@@ -19,7 +19,7 @@ from errors import PipelineError
 from pipeline import run_pipeline
 from tts import DEFAULT_VOICE, DEFAULT_SPEED, DEFAULT_WORKERS
 from llm import DEFAULT_MODEL
-from publisher import is_aws_configured, find_episode, delete_episode, delete_all_episodes, list_episodes
+from publisher import find_episode, delete_episode, delete_all_episodes, list_episodes
 
 
 def _print_progress(msg: str) -> None:
@@ -47,7 +47,7 @@ def main():
     parser.add_argument("--speed", "-s", type=float, default=DEFAULT_SPEED,
                         help=f"Speech speed (default: {DEFAULT_SPEED})")
     parser.add_argument("--no-upload", action="store_true",
-                        help="Skip S3 upload and podcast feed update")
+                        help="Skip remote sync (local feed is always updated)")
     parser.add_argument("--output", "-o", help="Custom output path")
     parser.add_argument("--model", "-m", default=DEFAULT_MODEL,
                         help=f"LLM model (default: {DEFAULT_MODEL}, based on configured provider)")
@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--delete", metavar="QUERY",
                         help="Delete episode matching title or URL")
     parser.add_argument("--delete-all", action="store_true",
-                        help="Delete all episodes from the feed and S3")
+                        help="Delete all episodes from the feed")
 
     args = parser.parse_args()
 
@@ -85,22 +85,19 @@ def main():
         if not episodes:
             print("  No episodes in the feed.")
             return
-        print(f"  This will delete {len(episodes)} episode(s) and all files from S3.")
+        print(f"  This will delete {len(episodes)} episode(s) and all associated files.")
         confirm = input("  Type 'yes delete everything' to confirm: ").strip()
         if confirm != "yes delete everything":
             print("  Cancelled.")
             return
         result = delete_all_episodes()
         print(f"  Deleted {result['episodes_deleted']} episode(s), "
-              f"{result['files_deleted']} file(s) removed from S3.")
+              f"{result['files_deleted']} file(s) removed.")
         return
 
     if not args.url and not args.file:
         parser.print_help()
         sys.exit(1)
-
-    if not is_aws_configured() and not args.no_upload:
-        print("  AWS not configured — saving locally only.\n")
 
     try:
         result = run_pipeline(

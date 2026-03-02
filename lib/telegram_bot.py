@@ -21,7 +21,7 @@ from telegram.ext import (
 from errors import PipelineError
 from llm import get_provider_info, get_available_providers, set_provider
 from pipeline import run_pipeline
-from publisher import get_feed_url, find_episode, list_episodes, delete_episode, delete_all_episodes
+from publisher import get_feed_url, get_remote_feed_urls, find_episode, list_episodes, delete_episode, delete_all_episodes
 from tts import (
     get_voice_info, get_available_voices, set_voice, VOICES,
     get_workers, get_recommended_workers, set_workers, WORKER_OPTIONS,
@@ -177,11 +177,11 @@ async def _feed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     allowed = context.bot_data["allowed_users"]
     if not _is_authorized(update.effective_user.id, allowed):
         return await _reject_unauthorized(update)
-    feed_url = get_feed_url()
-    if feed_url:
-        await update.message.reply_text(feed_url)
-    else:
-        await update.message.reply_text("Podcast feed not configured. Set up AWS in install.sh first.")
+    lines = [f"Local: {get_feed_url()}"]
+    remote_urls = get_remote_feed_urls()
+    for url in remote_urls:
+        lines.append(f"Remote: {url}")
+    await update.message.reply_text("\n".join(lines))
 
 
 async def _model(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -676,12 +676,14 @@ async def _deleteall(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         return
 
     count = len(episodes)
+    remote_urls = get_remote_feed_urls()
+    extra = " and remote backends" if remote_urls else ""
     keyboard = InlineKeyboardMarkup([[
         InlineKeyboardButton("Yes, delete everything", callback_data="deleteall_yes"),
         InlineKeyboardButton("Cancel", callback_data="deleteall_no"),
     ]])
     await update.message.reply_text(
-        f"Delete all {count} episode(s) and their files from S3?",
+        f"Delete all {count} episode(s) and their files locally{extra}?",
         reply_markup=keyboard,
     )
 
@@ -718,7 +720,7 @@ async def _button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             result = delete_all_episodes()
             await query.edit_message_text(
                 f"Deleted {result['episodes_deleted']} episode(s), "
-                f"{result['files_deleted']} file(s) removed from S3."
+                f"{result['files_deleted']} file(s) removed."
             )
         except Exception as e:
             await query.edit_message_text(f"Error: {e}")

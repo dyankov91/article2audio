@@ -52,6 +52,7 @@ print('✅ Model cached')
 
 chmod +x "$SCRIPT_DIR/bin/a2pod"
 chmod +x "$SCRIPT_DIR/bin/a2pod-bot"
+chmod +x "$SCRIPT_DIR/bin/a2pod-server"
 
 # ─── Output directory ───────────────────────────────────────────────────────
 
@@ -77,6 +78,110 @@ else
     echo "   echo 'export PATH=\"$SCRIPT_DIR/bin:\$PATH\"' >> ~/.zshrc && source ~/.zshrc"
   fi
 fi
+
+# ─── Podcast Name ────────────────────────────────────────────────────────────
+
+echo ""
+EXISTING_NAME=""
+if [[ -f "$CONFIG_DIR/config" ]]; then
+  EXISTING_NAME=$(python3 -c "
+import configparser, os
+cfg = configparser.ConfigParser()
+cfg.read(os.path.expanduser('~/.config/a2pod/config'))
+print(cfg.get('podcast', 'name', fallback=''))
+" 2>/dev/null)
+fi
+
+if [[ -n "$EXISTING_NAME" ]]; then
+  echo "✅ Podcast name: $EXISTING_NAME"
+  PODCAST_NAME="$EXISTING_NAME"
+else
+  read -p "📻 Podcast name [A2Pod]: " PODCAST_NAME
+  PODCAST_NAME="${PODCAST_NAME:-A2Pod}"
+
+  mkdir -p "$CONFIG_DIR"
+  python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('podcast'):
+    cfg.add_section('podcast')
+cfg.set('podcast', 'name', '$PODCAST_NAME')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
+  echo "   ✅ Podcast name set to: $PODCAST_NAME"
+fi
+
+# ─── Podcast Artwork ─────────────────────────────────────────────────────────
+
+ARTWORK_PATH="$HOME/A2Pod/artwork.jpg"
+if [[ -f "$ARTWORK_PATH" ]]; then
+  echo "✅ Podcast artwork exists"
+else
+  echo "🎨 Generating podcast artwork..."
+  python3 "$SCRIPT_DIR/lib/artwork.py" "$PODCAST_NAME" "$ARTWORK_PATH"
+  echo "   ✅ Artwork saved to $ARTWORK_PATH"
+fi
+
+# ─── Local Server (launchd) ──────────────────────────────────────────────────
+
+echo ""
+echo "🌐 Setting up local podcast server..."
+echo "   Serves ~/A2Pod/ on your LAN so podcast apps can subscribe."
+
+PYTHON_BIN="$(python3 -c 'import sys; print(sys.executable)')"
+PYTHON_DIR="$(dirname "$PYTHON_BIN")"
+SERVER_PLIST_PATH="$HOME/Library/LaunchAgents/com.a2pod.server.plist"
+SERVER_SCRIPT="$SCRIPT_DIR/bin/a2pod-server"
+SERVER_LOG="$CONFIG_DIR/server.log"
+
+cat > "$SERVER_PLIST_PATH" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.a2pod.server</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>$PYTHON_BIN</string>
+        <string>$SERVER_SCRIPT</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>$SCRIPT_DIR</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>$PYTHON_DIR:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>PYTHONPATH</key>
+        <string>$SCRIPT_DIR/lib</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>$SERVER_LOG</string>
+    <key>StandardErrorPath</key>
+    <string>$SERVER_LOG</string>
+</dict>
+</plist>
+PLIST
+
+launchctl bootout "gui/$(id -u)" "$SERVER_PLIST_PATH" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$SERVER_PLIST_PATH"
+
+HOSTNAME=$(python3 -c "
+import socket
+h = socket.gethostname()
+if not h.endswith('.local'): h += '.local'
+print(h)
+")
+echo "   ✅ Server started (com.a2pod.server)"
+echo "   Feed URL: http://$HOSTNAME:8008/feed.xml"
+echo "   Logs: $SERVER_LOG"
 
 # ─── Optional: X API for posts ────────────────────────────────────────────────
 
@@ -251,11 +356,11 @@ with open(path, 'w') as f:
     ;;
 esac
 
-# ─── Optional: AWS / Podcast sync ────────────────────────────────────────────
+# ─── Optional: AWS / Remote sync ─────────────────────────────────────────────
 
 echo ""
-echo "📡 Optional: Enable podcast sync via S3?"
-echo "   Audiobooks upload to S3 and appear in Apple Podcasts on iPhone."
+echo "📡 Optional: Enable remote sync via AWS S3?"
+echo "   Mirrors your podcast to S3 for public access outside your LAN."
 echo ""
 
 # Check if already configured
@@ -286,43 +391,14 @@ cfg = configparser.ConfigParser()
 cfg.read(os.path.expanduser('~/.config/a2pod/config'))
 print(cfg['aws']['region'])
 ")
-  EXISTING_NAME=$(python3 -c "
-import configparser, os
-cfg = configparser.ConfigParser()
-cfg.read(os.path.expanduser('~/.config/a2pod/config'))
-print(cfg.get('podcast', 'name', fallback=''))
-" 2>/dev/null)
   echo "✅ AWS already configured (profile: $EXISTING_PROFILE, bucket: $EXISTING_BUCKET)"
-  echo "   Feed URL: https://$EXISTING_BUCKET.s3.$EXISTING_REGION.amazonaws.com/feed.xml"
+  echo "   Remote feed: https://$EXISTING_BUCKET.s3.$EXISTING_REGION.amazonaws.com/feed.xml"
 
-  # Ensure podcast name is set
-  if [[ -z "$EXISTING_NAME" ]]; then
-    echo ""
-    read -p "   Podcast name [A2Pod]: " PODCAST_NAME
-    PODCAST_NAME="${PODCAST_NAME:-A2Pod}"
-    python3 -c "
-import configparser, os
-path = os.path.expanduser('~/.config/a2pod/config')
-cfg = configparser.ConfigParser()
-cfg.read(path)
-if not cfg.has_section('podcast'):
-    cfg.add_section('podcast')
-cfg.set('podcast', 'name', '$PODCAST_NAME')
-with open(path, 'w') as f:
-    cfg.write(f)
-"
-    echo "   ✅ Podcast name set to: $PODCAST_NAME"
-
-    # Generate and upload artwork
-    echo "   🎨 Generating podcast artwork..."
-    python3 "$SCRIPT_DIR/lib/artwork.py" "$PODCAST_NAME" "$CONFIG_DIR/artwork.jpg"
-    aws s3 cp "$CONFIG_DIR/artwork.jpg" "s3://$EXISTING_BUCKET/artwork.jpg" \
-      --profile "$EXISTING_PROFILE" --content-type "image/jpeg" --quiet 2>/dev/null || true
-  else
-    echo "   Podcast name: $EXISTING_NAME"
-  fi
+  # Upload artwork to S3 if not already there
+  aws s3 cp "$ARTWORK_PATH" "s3://$EXISTING_BUCKET/artwork.jpg" \
+    --profile "$EXISTING_PROFILE" --content-type "image/jpeg" --quiet 2>/dev/null || true
 else
-  read -p "   Set up AWS for podcast sync? (y/n): " setup_aws
+  read -p "   Set up AWS for remote sync? (y/n): " setup_aws
   if [[ "$setup_aws" =~ ^[Yy]$ ]]; then
     echo ""
 
@@ -440,37 +516,33 @@ with open(cfg_path, 'w') as f:
       --policy "{\"Version\":\"2012-10-17\",\"Statement\":[{\"Sid\":\"PublicRead\",\"Effect\":\"Allow\",\"Principal\":\"*\",\"Action\":\"s3:GetObject\",\"Resource\":\"arn:aws:s3:::${AWS_BUCKET}/*\"}]}" \
       2>/dev/null || true
 
-    # Podcast name
-    echo ""
-    read -p "   Podcast name [A2Pod]: " PODCAST_NAME
-    PODCAST_NAME="${PODCAST_NAME:-A2Pod}"
-
-    # Save config
+    # Save AWS config (preserve existing sections)
     mkdir -p "$CONFIG_DIR"
-    cat > "$CONFIG_DIR/config" <<CONF
-[aws]
-profile = $AWS_PROFILE
-bucket = $AWS_BUCKET
-region = $AWS_REGION
+    python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('aws'):
+    cfg.add_section('aws')
+cfg.set('aws', 'profile', '$AWS_PROFILE')
+cfg.set('aws', 'bucket', '$AWS_BUCKET')
+cfg.set('aws', 'region', '$AWS_REGION')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
 
-[podcast]
-name = $PODCAST_NAME
-CONF
-
-    # Generate and upload podcast artwork
-    echo "   🎨 Generating podcast artwork..."
-    python3 "$SCRIPT_DIR/lib/artwork.py" "$PODCAST_NAME" "$CONFIG_DIR/artwork.jpg"
-    aws s3 cp "$CONFIG_DIR/artwork.jpg" "s3://$AWS_BUCKET/artwork.jpg" \
+    # Upload artwork to S3
+    aws s3 cp "$ARTWORK_PATH" "s3://$AWS_BUCKET/artwork.jpg" \
       --profile "$AWS_PROFILE" --content-type "image/jpeg" --quiet 2>/dev/null || true
 
-    FEED_URL="https://$AWS_BUCKET.s3.$AWS_REGION.amazonaws.com/feed.xml"
+    REMOTE_FEED_URL="https://$AWS_BUCKET.s3.$AWS_REGION.amazonaws.com/feed.xml"
     echo ""
-    echo "   ✅ Podcast sync configured!"
-    echo "   Feed URL: $FEED_URL"
-    echo "   Subscribe to this URL in Apple Podcasts on your iPhone."
+    echo "   ✅ AWS remote sync configured!"
+    echo "   Remote feed: $REMOTE_FEED_URL"
   else
-    echo "   Skipped. Audiobooks will be saved locally only."
-    echo "   Run install.sh again to set up later."
+    echo "   Skipped. Your podcast is available on your LAN via the local server."
+    echo "   Run install.sh again to set up remote sync later."
   fi
 fi
 
@@ -492,9 +564,7 @@ print(cfg.get('telegram', 'bot_token', fallback=''))
 " 2>/dev/null)
 fi
 
-PLIST_PATH="$HOME/Library/LaunchAgents/com.a2pod.bot.plist"
-PYTHON_BIN="$(python3 -c 'import sys; print(sys.executable)')"
-PYTHON_DIR="$(dirname "$PYTHON_BIN")"
+BOT_PLIST_PATH="$HOME/Library/LaunchAgents/com.a2pod.bot.plist"
 BOT_SCRIPT="$SCRIPT_DIR/bin/a2pod-bot"
 BOT_LOG="$CONFIG_DIR/bot.log"
 
@@ -502,12 +572,12 @@ if [[ -n "$EXISTING_TG_TOKEN" ]]; then
   echo "✅ Telegram bot already configured"
 
   # Check if launchd service is installed
-  if [[ -f "$PLIST_PATH" ]]; then
+  if [[ -f "$BOT_PLIST_PATH" ]]; then
     echo "✅ Bot service installed (com.a2pod.bot)"
   else
     read -p "   Install bot as background service? (y/n): " install_svc
     if [[ "$install_svc" =~ ^[Yy]$ ]]; then
-      cat > "$PLIST_PATH" <<PLIST
+      cat > "$BOT_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -539,8 +609,8 @@ if [[ -n "$EXISTING_TG_TOKEN" ]]; then
 </dict>
 </plist>
 PLIST
-      launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null
-      launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+      launchctl bootout "gui/$(id -u)" "$BOT_PLIST_PATH" 2>/dev/null
+      launchctl bootstrap "gui/$(id -u)" "$BOT_PLIST_PATH"
       echo "   ✅ Bot service started"
       echo "   Logs: $BOT_LOG"
     fi
@@ -579,7 +649,7 @@ with open(path, 'w') as f:
     echo ""
     read -p "   Run bot automatically in the background? (y/n): " install_svc
     if [[ "$install_svc" =~ ^[Yy]$ ]]; then
-      cat > "$PLIST_PATH" <<PLIST
+      cat > "$BOT_PLIST_PATH" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -611,8 +681,8 @@ with open(path, 'w') as f:
 </dict>
 </plist>
 PLIST
-      launchctl bootout "gui/$(id -u)" "$PLIST_PATH" 2>/dev/null
-      launchctl bootstrap "gui/$(id -u)" "$PLIST_PATH"
+      launchctl bootout "gui/$(id -u)" "$BOT_PLIST_PATH" 2>/dev/null
+      launchctl bootstrap "gui/$(id -u)" "$BOT_PLIST_PATH"
       echo "   ✅ Bot service started"
       echo "   Logs: $BOT_LOG"
     else
@@ -635,5 +705,7 @@ echo "✅ Setup complete!"
 echo ""
 echo "📌 Usage:"
 echo "  a2pod https://some-article.com"
-echo "  a2pod https://some-article.com --no-upload"
+echo ""
+echo "🎧 Subscribe in any podcast app:"
+echo "  http://$HOSTNAME:8008/feed.xml"
 echo ""
