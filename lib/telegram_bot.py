@@ -25,6 +25,7 @@ from publisher import get_feed_url, find_episode, list_episodes, delete_episode,
 from tts import get_voice_info, get_available_voices, set_voice, VOICES
 
 _CONFIG_PATH = Path.home() / ".config" / "a2pod" / "config"
+_RESTART_MARKER = Path.home() / ".config" / "a2pod" / ".restart_chat_id"
 
 logger = logging.getLogger(__name__)
 
@@ -146,6 +147,8 @@ async def _restart(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return await _reject_unauthorized(update)
     logger.info("Restart requested by @%s", update.effective_user.username or update.effective_user.id)
     await update.message.reply_text("Restarting...")
+    _RESTART_MARKER.parent.mkdir(parents=True, exist_ok=True)
+    _RESTART_MARKER.write_text(str(update.effective_chat.id))
     os.kill(os.getpid(), signal.SIGTERM)
 
 
@@ -710,6 +713,14 @@ def run_bot() -> None:
             ("restart", "Restart the bot"),
             ("help", "How to use this bot"),
         ])
+        if _RESTART_MARKER.exists():
+            try:
+                chat_id = int(_RESTART_MARKER.read_text().strip())
+                await application.bot.send_message(chat_id, f"Back online. ({_GIT_VERSION})")
+            except Exception:
+                logger.warning("Failed to send restart confirmation", exc_info=True)
+            finally:
+                _RESTART_MARKER.unlink(missing_ok=True)
 
     app = Application.builder().token(token).post_init(_post_init).build()
     app.bot_data["allowed_users"] = allowed
