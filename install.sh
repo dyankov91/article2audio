@@ -519,6 +519,23 @@ case "$llm_choice" in
           echo "   Skipped. Use --no-summary or pull a model later: ollama pull llama3.2"
         fi
       fi
+      # Offer qwen3.5:9b as a higher-quality alternative
+      if ! ollama list 2>/dev/null | grep -q "qwen3.5:9b"; then
+        echo ""
+        read -p "   Also pull qwen3.5:9b (~6GB)? Recommended for higher quality. (y/n): " pull_qwen
+        if [[ "$pull_qwen" =~ ^[Yy]$ ]]; then
+          if ! curl -sf http://localhost:11434/api/tags &>/dev/null; then
+            echo "   Starting Ollama server..."
+            brew services start ollama
+            sleep 2
+          fi
+          echo "   Downloading qwen3.5:9b..."
+          ollama pull qwen3.5:9b
+          echo "   ✅ qwen3.5:9b ready (use with --model qwen3.5:9b)"
+        fi
+      else
+        echo "✅ qwen3.5:9b model is available"
+      fi
     else
       read -p "   Install Ollama? (y/n): " install_ollama
       if [[ "$install_ollama" =~ ^[Yy]$ ]]; then
@@ -530,6 +547,14 @@ case "$llm_choice" in
         echo "   Pulling llama3.2 model (~2GB)..."
         ollama pull llama3.2
         echo "   ✅ Ollama ready (running as background service)"
+        # Offer qwen3.5:9b as a higher-quality alternative
+        echo ""
+        read -p "   Also pull qwen3.5:9b (~6GB)? Recommended for higher quality. (y/n): " pull_qwen
+        if [[ "$pull_qwen" =~ ^[Yy]$ ]]; then
+          echo "   Downloading qwen3.5:9b..."
+          ollama pull qwen3.5:9b
+          echo "   ✅ qwen3.5:9b ready (use with --model qwen3.5:9b)"
+        fi
       else
         echo "   Skipped. Summaries will use fallback (first sentence)."
         echo "   Install later: brew install ollama && ollama pull llama3.2"

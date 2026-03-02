@@ -83,7 +83,7 @@ a2pod https://example.com/article --force
 a2pod https://example.com/article --workers 4
 
 # Override LLM model
-a2pod https://example.com/article --model mistral
+a2pod https://example.com/article --model qwen3.5:9b
 ```
 
 ### CLI Reference
@@ -293,11 +293,13 @@ An LLM is used for episode summaries and the second pass of text cleaning. If no
 ```ini
 [llm]
 provider = ollama
-model = llama3.2
+model = llama3.2          # default; lightweight (~2GB)
+# model = qwen3.5:9b      # higher quality (~6GB)
 ```
 
 ```bash
 brew install ollama && ollama pull llama3.2
+ollama pull qwen3.5:9b   # optional, recommended for better summaries
 ```
 
 **OpenAI:**
