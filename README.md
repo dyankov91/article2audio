@@ -257,9 +257,9 @@ bearer_token = YOUR_TOKEN_HERE         # X/Twitter API v2 bearer token
 name = A2Pod                   # Podcast title in feed and episode intros
 
 [aws]
-profile = default                        # AWS CLI profile name
-bucket = my-podcast-feed            # S3 bucket name
-region = eu-central-1                  # AWS region
+profile = default                      # AWS CLI profile name
+bucket = my-podcast-feed               # S3 bucket name
+region = us-east-1                     # AWS region
 ```
 
 ### LLM Providers
@@ -318,7 +318,7 @@ When AWS is configured, each audiobook is uploaded to S3 and the podcast feed is
 2. Tap **Search** → tap the search bar
 3. Paste the feed URL:
    ```
-   https://my-podcast-feed.s3.eu-central-1.amazonaws.com/feed.xml
+   https://<your-bucket>.s3.<your-region>.amazonaws.com/feed.xml
    ```
 4. Tap **Follow**
 
@@ -329,8 +329,7 @@ Every new article you convert will appear as an episode.
 The installer prompts for AWS credentials. To configure manually:
 
 ```bash
-aws configure --profile default
-# Region: eu-central-1
+aws configure --profile <your-profile>
 ```
 
 The S3 bucket needs public read access for Apple Podcasts to fetch the feed and audio files.
@@ -376,8 +375,8 @@ a2pod/
 
 - Audio saved to `~/A2Pod/` as `.m4a` files
 - WebVTT transcripts saved alongside as `.vtt` files
-- Uploaded to `s3://my-podcast-feed/audiobooks/`
-- Feed at `https://my-podcast-feed.s3.eu-central-1.amazonaws.com/feed.xml`
+- Uploaded to `s3://<your-bucket>/audiobooks/`
+- Feed at `https://<your-bucket>.s3.<your-region>.amazonaws.com/feed.xml`
 
 ## Contributing
 
