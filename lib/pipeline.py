@@ -4,7 +4,6 @@ import configparser
 import os
 import re
 import tempfile
-import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -15,7 +14,7 @@ from summarizer import get_summary
 from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED, DEFAULT_WORKERS, VOICES
 from assembler import concat_to_m4b, build_transcript_vtt
-from intro import generate_intro, get_intro_duration
+from intro import get_cached_intro_parts, assemble_intro, get_intro_duration
 from publisher import publish_episode, find_existing_episode
 
 _CONFIG_PATH = os.path.expanduser("~/.config/a2pod/config")
@@ -131,63 +130,36 @@ def run_pipeline(
 
     # Generate audio
     with tempfile.TemporaryDirectory() as tmpdir:
-        # When workers >= 2, content TTS runs in child processes via
-        # ProcessPoolExecutor, so intro TTS can safely run in the main
-        # process in parallel.  When workers <= 1 or only one chunk,
-        # content TTS runs in the main process (sequential fallback),
-        # so we keep intro sequential to avoid MLX contention.
-        parallel_intro = not no_intro and workers >= 2 and len(chunks) > 1
-
-        if parallel_intro:
-            from concurrent.futures import ThreadPoolExecutor
-
+        intro_title = None
+        if not no_intro:
+            # Cache jingle + "presents:" speech; only the title needs TTS
             podcast_name = _load_podcast_name()
             progress("Generating episode intro...")
+            jingle, presents, silence = get_cached_intro_parts(
+                voice, speed, tmpdir, podcast_name,
+            )
+            intro_title = resolved_title
+            progress("Intro done.")
 
-            _progress_lock = threading.Lock()
+        # Generate content audio + intro title in the same worker pool
+        content_wavs, title_wav = generate_audio_chunks(
+            chunks, voice, speed, tmpdir,
+            on_progress=lambda msg: progress(msg.strip()),
+            workers=workers,
+            intro_title=intro_title,
+        )
+        progress("Audio done.")
 
-            def _thread_safe_progress(msg: str) -> None:
-                with _progress_lock:
-                    progress(msg.strip())
-
-            with ThreadPoolExecutor(max_workers=2) as pool:
-                content_future = pool.submit(
-                    generate_audio_chunks,
-                    chunks, voice, speed, tmpdir,
-                    on_progress=_thread_safe_progress,
-                    workers=workers,
-                )
-                intro_future = pool.submit(
-                    generate_intro,
-                    resolved_title, voice, speed, tmpdir, podcast_name,
-                )
-                content_wavs = content_future.result()
-                intro_wavs = intro_future.result()
-
-            progress("Audio done.")
+        intro_offset = 0.0
+        if not no_intro and title_wav:
+            intro_wavs = assemble_intro(jingle, presents, title_wav, silence)
             intro_offset = get_intro_duration(intro_wavs)
             wav_files = intro_wavs + content_wavs
-            progress("Intro done.")
+        elif not no_intro:
+            # title TTS failed — skip intro
+            wav_files = content_wavs
         else:
-            content_wavs = generate_audio_chunks(
-                chunks, voice, speed, tmpdir,
-                on_progress=lambda msg: progress(msg.strip()),
-                workers=workers,
-            )
-            progress("Audio done.")
-
-            intro_offset = 0.0
-            if not no_intro:
-                progress("Generating episode intro...")
-                podcast_name = _load_podcast_name()
-                intro_wavs = generate_intro(
-                    resolved_title, voice, speed, tmpdir, podcast_name,
-                )
-                intro_offset = get_intro_duration(intro_wavs)
-                wav_files = intro_wavs + content_wavs
-                progress("Intro done.")
-            else:
-                wav_files = content_wavs
+            wav_files = content_wavs
 
         OUTPUT_DIR.mkdir(exist_ok=True)
         filename = sanitize_filename(resolved_title)
@@ -206,12 +178,26 @@ def run_pipeline(
     size_mb = os.path.getsize(output_path) / (1024 * 1024)
     progress(f"Saved: {output_path} ({size_mb:.1f} MB)")
 
+    # Get audio duration from the M4A file via ffprobe
+    duration_secs = 0
+    try:
+        import subprocess
+        probe = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", output_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        duration_secs = int(float(probe.stdout.strip()))
+    except Exception:
+        pass
+
     result = {
         "output_path": output_path,
         "vtt_path": vtt_path,
         "title": resolved_title,
         "size_mb": size_mb,
         "summary": summary,
+        "duration_secs": duration_secs,
     }
 
     progress("Publishing to podcast feed...")

@@ -492,9 +492,10 @@ echo ""
 echo "   1) Ollama (local, free, requires ~2GB disk)"
 echo "   2) OpenAI API (cloud, requires API key)"
 echo "   3) Anthropic API (cloud, requires API key)"
-echo "   4) Skip (summaries will use fallback)"
+echo "   4) Google Gemini API (cloud, requires API key)"
+echo "   5) Skip (summaries will use fallback)"
 echo ""
-read -p "   Choose (1-4) [1]: " llm_choice
+read -p "   Choose (1-5) [1]: " llm_choice
 llm_choice="${llm_choice:-1}"
 
 case "$llm_choice" in
@@ -626,6 +627,28 @@ with open(path, 'w') as f:
     echo "   ✅ Anthropic configured (model: claude-haiku-4-20250414)"
     ;;
   4)
+    # Google Gemini setup
+    echo ""
+    read -s -p "   Google Gemini API key: " GEMINI_KEY
+    echo ""
+
+    mkdir -p "$CONFIG_DIR"
+    python3 -c "
+import configparser, os
+path = os.path.expanduser('~/.config/a2pod/config')
+cfg = configparser.ConfigParser()
+cfg.read(path)
+if not cfg.has_section('llm'):
+    cfg.add_section('llm')
+cfg.set('llm', 'provider', 'gemini')
+cfg.set('llm', 'gemini_api_key', '$GEMINI_KEY')
+cfg.set('llm', 'model', 'gemini-2.5-flash-lite')
+with open(path, 'w') as f:
+    cfg.write(f)
+"
+    echo "   ✅ Gemini configured (model: gemini-2.5-flash-lite)"
+    ;;
+  5)
     echo "   Skipped. Summaries will use fallback (first sentence)."
     echo "   Configure later in ~/.config/a2pod/config under [llm]."
     ;;

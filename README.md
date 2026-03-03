@@ -32,7 +32,7 @@ URL / file / text  →  Extract  →  Clean  →  Summarize  →  Chunk  →  TT
 - ~500 MB disk for model + dependencies
 - X API bearer token (optional, for X/Twitter posts)
 - AWS account (optional, for S3 provider)
-- LLM provider (optional, for summaries and text cleaning): [Ollama](https://ollama.com) (local), [OpenAI API](https://platform.openai.com), or [Anthropic API](https://console.anthropic.com)
+- LLM provider (optional, for summaries and text cleaning): [Ollama](https://ollama.com) (local), [OpenAI API](https://platform.openai.com), [Anthropic API](https://console.anthropic.com), or [Google Gemini API](https://ai.google.dev)
 
 ## Quick Start
 
@@ -262,10 +262,11 @@ port = 8008                            # Local HTTP server port (local provider 
 # hostname = 192.168.1.50              # Override auto-detected LAN IP
 
 [llm]
-provider = ollama                      # ollama, openai, or anthropic
+provider = ollama                      # ollama, openai, anthropic, or gemini
 model = llama3.2                       # Model name for the active provider
 openai_api_key = sk-...                # OpenAI API key (if using OpenAI)
 anthropic_api_key = sk-ant-...         # Anthropic API key (if using Anthropic)
+gemini_api_key = AIza...               # Google Gemini API key (if using Gemini)
 
 [tts]
 voice = af_heart                       # Default TTS voice
@@ -320,6 +321,15 @@ anthropic_api_key = sk-ant-...
 model = claude-haiku-4-20250414
 ```
 
+**Google Gemini:**
+
+```ini
+[llm]
+provider = gemini
+gemini_api_key = AIza...
+model = gemini-2.5-flash-lite
+```
+
 You can store API keys for multiple providers and switch between them at runtime via the Telegram bot's `/model` command or by editing the config. Use `--no-summary` to skip summaries entirely, or `--model <name>` to override the model for a single run.
 
 ### Voices
@@ -360,7 +370,7 @@ a2pod/
 │   ├── pipeline.py            # Orchestration (used by CLI and bot)
 │   ├── extractor.py           # URL/file/text extraction (trafilatura + X API)
 │   ├── cleaner.py             # Regex + LLM two-pass text cleaning
-│   ├── llm.py                 # LLM abstraction (Ollama / OpenAI / Anthropic)
+│   ├── llm.py                 # LLM abstraction (Ollama / OpenAI / Anthropic / Gemini)
 │   ├── summarizer.py          # LexRank extraction + LLM episode summaries
 │   ├── chunker.py             # Sentence-boundary text splitting
 │   ├── tts.py                 # Kokoro-82M TTS via MLX Audio

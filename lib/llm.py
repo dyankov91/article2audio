@@ -1,6 +1,6 @@
 """Configurable LLM abstraction layer.
 
-Supports Ollama (local), OpenAI, and Anthropic as backends.
+Supports Ollama (local), OpenAI, Anthropic, and Google Gemini as backends.
 Provider is configured via the [llm] section in ~/.config/a2pod/config.
 Falls back to Ollama + llama3.2 if unconfigured (backward compatible).
 Supports runtime switching via set_provider().
@@ -19,6 +19,7 @@ _DEFAULT_MODELS = {
     "ollama": "llama3.2",
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-20250414",
+    "gemini": "gemini-2.5-flash-lite",
 }
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -245,10 +246,61 @@ def _generate_anthropic(prompt: str, temperature: float, max_tokens: int, model:
         return None
 
 
+def _generate_gemini(prompt: str, temperature: float, max_tokens: int, model: str, api_key: str) -> str | None:
+    """Generate via Google Gemini REST API (no SDK — avoids httpx thread issues)."""
+    if not api_key:
+        raise RuntimeError(
+            "Gemini provider selected but no api_key set in config.\n"
+            "Add gemini_api_key to [llm] section in ~/.config/a2pod/config"
+        )
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model}"
+        f":generateContent?key={api_key}"
+    )
+    payload = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+        },
+    }).encode("utf-8")
+
+    import time as _time
+
+    for attempt in range(4):
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            candidates = data.get("candidates", [])
+            if not candidates:
+                return None
+            parts = candidates[0].get("content", {}).get("parts", [])
+            if not parts:
+                return None
+            result = parts[0].get("text", "").strip()
+            return result if result else None
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < 3:
+                _time.sleep(2 ** attempt)  # 1s, 2s, 4s
+                continue
+            return None
+        except (urllib.error.URLError, TimeoutError,
+                json.JSONDecodeError, KeyError, OSError, IndexError):
+            return None
+    return None
+
+
 _BACKENDS = {
     "ollama": _generate_ollama,
     "openai": _generate_openai,
     "anthropic": _generate_anthropic,
+    "gemini": _generate_gemini,
 }
 
 

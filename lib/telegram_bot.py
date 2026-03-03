@@ -50,28 +50,59 @@ _GIT_VERSION = _get_git_version()
 
 # Map pipeline progress messages to short user-facing status lines.
 # Only messages matching a key here produce a status update in Telegram.
-_STATUS_MAP = {
-    "Fetching article...": "Fetching article...",
-    "Processing text...": "Processing text...",
-    "Extracting text from file...": "Extracting text...",
-    "Cleaning text...": "Cleaning text...",
-    "Generating summary...": "Generating summary...",
-    "Generating episode intro...": "Generating intro...",
-    "Encoding M4A...": "Encoding audio...",
-    "Publishing to podcast feed...": "Publishing...",
+_PIPELINE_STEPS = [
+    "Cleaning text",
+    "Generating summary",
+    "Generating intro",
+    "Generating audio",
+    "Encoding audio",
+    "Publishing",
+]
+
+_W = "⬜"  # waiting
+_A = "⏳"  # active
+_D = "✅"  # done
+
+# Maps pipeline "starting" messages → step label to mark active
+_START_MAP = {
+    "Fetching article...": "Fetching article",
+    "Processing text...": "Processing text",
+    "Extracting text from file...": "Extracting text",
+    "Cleaning text...": "Cleaning text",
+    "Generating summary...": "Generating summary",
+    "Generating episode intro...": "Generating intro",
+    "Encoding M4A...": "Encoding audio",
+    "Publishing to podcast feed...": "Publishing",
 }
 
-# Map pipeline completion messages to (label_to_replace, done_text).
-# label_to_replace is matched against the start of existing status lines.
+# Maps pipeline "done" messages → step labels to mark done
 _DONE_MAP = {
-    "Text extracted.": (["Fetching article", "Processing text", "Extracting text"], "[done]"),
-    "Text cleaned.": (["Cleaning text"], "[done]"),
-    "Summary done.": (["Generating summary"], "[done]"),
-    "Audio done.": (["Generating audio"], "[done]"),
-    "Intro done.": (["Generating intro"], "[done]"),
-    "Encoding done.": (["Encoding audio"], "[done]"),
-    "Publishing done.": (["Publishing"], "[done]"),
+    "Text extracted.": ["Fetching article", "Processing text", "Extracting text"],
+    "Text cleaned.": ["Cleaning text"],
+    "Summary done.": ["Generating summary"],
+    "Audio done.": ["Generating audio"],
+    "Intro done.": ["Generating intro"],
+    "Encoding done.": ["Encoding audio"],
+    "Publishing done.": ["Publishing"],
 }
+
+
+def _init_status(first_step: str) -> list[str]:
+    """Build the full status display with all steps visible from the start."""
+    lines = [f"{_A} {first_step}"]
+    lines.extend(f"{_W} {s}" for s in _PIPELINE_STEPS)
+    return lines
+
+
+def _update_step(status_lines: list[str], label: str, emoji: str, suffix: str = "") -> None:
+    """Find a step by label and update its emoji and optional suffix."""
+    for idx, line in enumerate(status_lines):
+        # Lines are like "⬜ Cleaning text" or "⏳ Generating audio [2/8]"
+        # Strip the emoji prefix and any suffix to match the label
+        bare = line[2:].split(" [")[0].split("...")[0]
+        if bare == label:
+            status_lines[idx] = f"{emoji} {label}{suffix}"
+            return
 
 
 def load_telegram_config() -> tuple[str, set[int]]:
@@ -147,7 +178,7 @@ async def _help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         "3. Publish to the podcast feed\n\n"
         "Supported: web articles, X/Twitter posts, .txt files, pasted text.\n\n"
         "/model — show/switch LLM provider and model\n"
-        "/model <provider> — switch provider (ollama, openai, anthropic)\n"
+        "/model <provider> — switch provider (ollama, openai, anthropic, gemini)\n"
         "/model <provider> <model> — switch provider and model\n"
         "/voice — show/switch TTS voice\n"
         "/voice <voice_id> — switch voice (e.g. af_heart, am_adam)\n"
@@ -422,8 +453,14 @@ def _format_result(result: dict, elapsed: float) -> str:
     if audio_url:
         lines.append(f"\n[Listen]({audio_url})")
     if not cached:
-        mins, secs = divmod(int(elapsed), 60)
-        lines.append(f"\n_Build time: {mins}m {secs}s_" if mins else f"\n_Build time: {secs}s_")
+        duration_secs = result.get("duration_secs", 0)
+        meta = []
+        if duration_secs:
+            d_mins, d_secs = divmod(duration_secs, 60)
+            meta.append(f"Listening time: {d_mins}m {d_secs:02d}s")
+        b_mins, b_secs = divmod(int(elapsed), 60)
+        meta.append(f"Build time: {b_mins}m {b_secs}s" if b_mins else f"Build time: {b_secs}s")
+        lines.append(f"\n_{' · '.join(meta)}_")
     return "\n".join(lines)
 
 
@@ -439,42 +476,18 @@ def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
         chunk_match = not tts_start and re.match(r"(Cleaning text|Generating audio) \[(\d+)/(\d+)\]", msg)
         tts_match = not chunk_match and not tts_start and re.match(r"Chunk \[(\d+)/(\d+)\]", msg)
         if tts_start:
-            total = tts_start.group(1)
-            label = "Generating audio"
-            progress_line = f"{label} [0/{total}]..."
-            status_lines.append(progress_line)
+            _update_step(status_lines, "Generating audio", _A, f" [0/{tts_start.group(1)}]")
         elif chunk_match:
             label, i, total = chunk_match.group(1), chunk_match.group(2), chunk_match.group(3)
-            progress_line = f"{label} [{i}/{total}]..."
-            for idx, line in enumerate(status_lines):
-                if line.startswith(label):
-                    status_lines[idx] = progress_line
-                    break
-            else:
-                status_lines.append(progress_line)
+            _update_step(status_lines, label, _A, f" [{i}/{total}]")
         elif tts_match:
             i, total = tts_match.group(1), tts_match.group(2)
-            label = "Generating audio"
-            progress_line = f"{label} [{i}/{total}]..."
-            for idx, line in enumerate(status_lines):
-                if line.startswith(label):
-                    status_lines[idx] = progress_line
-                    break
-            else:
-                status_lines.append(progress_line)
+            _update_step(status_lines, "Generating audio", _A, f" [{i}/{total}]")
         elif msg in _DONE_MAP:
-            prefixes, suffix = _DONE_MAP[msg]
-            found = False
-            for idx, line in enumerate(status_lines):
-                for prefix in prefixes:
-                    if line.startswith(prefix):
-                        status_lines[idx] = f"{prefix} {suffix}"
-                        found = True
-                        break
-                if found:
-                    break
-        elif msg in _STATUS_MAP:
-            status_lines.append(_STATUS_MAP[msg])
+            for label in _DONE_MAP[msg]:
+                _update_step(status_lines, label, _D)
+        elif msg in _START_MAP:
+            _update_step(status_lines, _START_MAP[msg], _A)
         else:
             return  # skip noisy messages
 
@@ -536,9 +549,9 @@ async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     active_jobs.add(user_id)
     logger.info("Job started for @%s: %s", username, url)
 
-    # Send initial status message
-    status_lines = ["Starting..."]
-    status_msg = await update.message.reply_text(status_lines[0])
+    # Send initial status message with all steps visible
+    status_lines = _init_status("Fetching article")
+    status_msg = await update.message.reply_text("\n".join(status_lines))
 
     loop = asyncio.get_running_loop()
     t0 = time.monotonic()
@@ -608,8 +621,8 @@ async def _handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     active_jobs.add(user_id)
     logger.info("Document job started for @%s: %s", username, file_name)
 
-    status_lines = ["Starting..."]
-    status_msg = await update.message.reply_text(status_lines[0])
+    status_lines = _init_status("Extracting text")
+    status_msg = await update.message.reply_text("\n".join(status_lines))
 
     loop = asyncio.get_running_loop()
     t0 = time.monotonic()
@@ -762,8 +775,8 @@ async def _button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         active_jobs.add(user_id)
         logger.info("Text job started for @%s (%d words)", username, len(pending_text.split()))
 
-        status_lines = ["Starting..."]
-        await query.edit_message_text(status_lines[0])
+        status_lines = _init_status("Processing text")
+        await query.edit_message_text("\n".join(status_lines))
         status_message_id = query.message.message_id
         chat_id = query.message.chat_id
 

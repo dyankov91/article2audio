@@ -2,9 +2,9 @@
 
 import configparser
 import logging
+import multiprocessing as mp
 import os
 import warnings
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from typing import Callable
 
 import numpy as np
@@ -194,16 +194,25 @@ def generate_audio_chunks(
     model_id: str = MODEL,
     on_progress: Callable[[str], None] | None = None,
     workers: int = DEFAULT_WORKERS,
-) -> list[str]:
+    intro_title: str | None = None,
+) -> tuple[list[str], str | None]:
     """Generate WAV files for each text chunk using parallel workers.
 
-    Returns list of WAV file paths in order.
+    If intro_title is provided, it's generated as an extra chunk by the same
+    worker pool (no separate model load needed for the intro).
+
+    Returns (content_wav_files, intro_title_wav_or_None).
     """
     progress = on_progress or _default_progress
     total = len(chunks)
 
     if workers <= 1 or total <= 1:
-        return _generate_sequential(chunks, voice, speed, tmpdir, model_id, progress)
+        content = _generate_sequential(chunks, voice, speed, tmpdir, model_id, progress)
+        title_wav = None
+        if intro_title:
+            title_item = (0, intro_title, voice, speed, tmpdir, model_id)
+            _, title_wav, _ = _generate_chunk(title_item)
+        return content, title_wav
 
     progress(f"  Generating audio for {total} chunks ({workers} workers)...\n")
 
@@ -211,29 +220,38 @@ def generate_audio_chunks(
         (i, chunk, voice, speed, tmpdir, model_id)
         for i, chunk in enumerate(chunks, 1)
     ]
+    # Piggyback the intro title onto the worker pool at index 0
+    if intro_title:
+        work_items.insert(0, (0, intro_title, voice, speed, tmpdir, model_id))
+
+    # Use multiprocessing.Pool (more reliable than ProcessPoolExecutor in
+    # asyncio contexts — ProcessPoolExecutor's internal management threads
+    # deadlock under python-telegram-bot's event loop).
+    ctx = mp.get_context("spawn")
+    pool = ctx.Pool(workers)
+    try:
+        pool_results = pool.map(_generate_chunk, work_items)
+    finally:
+        pool.close()
+        pool.join()
 
     results: dict[int, tuple[str | None, float]] = {}
-    done_count = 0
+    for idx, wav_path, duration in pool_results:
+        results[idx] = (wav_path, duration)
+        if idx == 0:
+            continue
+        if wav_path:
+            progress(f"  Chunk [{len(results) - (1 if intro_title else 0)}/{total}] done — {duration:.0f}s\n")
 
-    with ProcessPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(_generate_chunk, item): item[0] for item in work_items}
-        for future in as_completed(futures):
-            idx, wav_path, duration = future.result()
-            results[idx] = (wav_path, duration)
-            done_count += 1
-            if wav_path:
-                progress(f"  Chunk [{done_count}/{total}] done — {duration:.0f}s\n")
-            else:
-                progress(f"  Chunk [{done_count}/{total}] skipped (no audio)\n")
-
-    # Collect in original order
+    # Collect content in original order (index 1+)
     wav_files = []
     for i in range(1, total + 1):
         wav_path, _ = results[i]
         if wav_path:
             wav_files.append(wav_path)
 
-    return wav_files
+    title_wav = results[0][0] if intro_title and 0 in results else None
+    return wav_files, title_wav
 
 
 def _generate_sequential(

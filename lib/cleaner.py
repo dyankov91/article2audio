@@ -16,6 +16,7 @@ _LLM_CHUNK_SIZES = {
     "ollama": 12000,   # local — sequential, fewer calls is better
     "openai": 3000,    # cloud — parallel, more chunks = faster
     "anthropic": 3000,
+    "gemini": 3000,
 }
 
 # Common abbreviations that TTS reads letter-by-letter → spoken forms
@@ -207,6 +208,9 @@ def clean_for_audio(text: str) -> str:
     text = re.sub(r"\s*=\s*", " equals ", text)
 
     # ── Number-to-words conversion ────────────────────────────────────────────
+
+    # Strip commas from formatted numbers: 40,000 → 40000, $1,234,567 → $1234567
+    text = re.sub(r"\d{1,3}(?:,\d{3})+", lambda m: m.group(0).replace(",", ""), text)
 
     # Dollar amounts: $42 → forty-two dollars (skip K/M/B amounts already handled)
     def _dollar_to_words(m):
