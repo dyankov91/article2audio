@@ -152,6 +152,7 @@ def _generate_ollama(prompt: str, temperature: float, max_tokens: int, model: st
         "model": model,
         "prompt": prompt,
         "stream": False,
+        "think": False,
         "options": {
             "temperature": temperature,
             "num_predict": max_tokens,
@@ -164,7 +165,7 @@ def _generate_ollama(prompt: str, temperature: float, max_tokens: int, model: st
         headers={"Content-Type": "application/json"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
+        with urllib.request.urlopen(req, timeout=300) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             result = data.get("response", "").strip()
             return result if result else None
