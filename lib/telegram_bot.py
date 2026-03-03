@@ -468,8 +468,10 @@ def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
                         status_message_id: int, bot, status_lines: list[str],
                         url=None, file_path=None, text=None, title=None) -> dict:
     """Run the sync pipeline in a thread, bridging progress back to async."""
+    last_future = None
 
     def on_progress(msg: str) -> None:
+        nonlocal last_future
         msg = msg.strip()
         # Chunk-style progress: "Cleaning text [2/5]", "Generating audio [3/8]", "Chunk [2/4] done"
         tts_start = re.match(r"Generating audio for (\d+) chunks", msg)
@@ -492,7 +494,7 @@ def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
             return  # skip noisy messages
 
         status_text = "\n".join(status_lines)
-        asyncio.run_coroutine_threadsafe(
+        last_future = asyncio.run_coroutine_threadsafe(
             bot.edit_message_text(chat_id=chat_id, message_id=status_message_id, text=status_text),
             loop,
         )
@@ -500,10 +502,21 @@ def _run_pipeline_sync(loop: asyncio.AbstractEventLoop, chat_id: int,
     voice_id, _ = get_voice_info()
     workers = get_workers()
     speed = get_speed()
-    return run_pipeline(
+    result = run_pipeline(
         url=url, file_path=file_path, text=text, title=title,
         voice=voice_id, speed=speed, workers=workers, on_progress=on_progress,
     )
+
+    # Wait for the last progress edit to finish before returning, so the
+    # caller's final edit_text (showing the summary) isn't overwritten by a
+    # still-pending progress update.
+    if last_future:
+        try:
+            last_future.result(timeout=10)
+        except Exception:
+            pass
+
+    return result
 
 
 async def _handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
