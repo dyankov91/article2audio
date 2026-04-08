@@ -14,7 +14,7 @@ from summarizer import get_summary
 from chunker import chunk_text
 from tts import generate_audio_chunks, DEFAULT_VOICE, DEFAULT_SPEED, DEFAULT_WORKERS, VOICES
 from assembler import concat_to_m4b, build_transcript_vtt
-from intro import get_cached_intro_parts, assemble_intro, get_intro_duration
+from audio_branding import get_cached_intro_parts, get_cached_outro, assemble_intro, get_intro_duration
 from publisher import publish_episode, find_existing_episode
 
 _CONFIG_PATH = os.path.expanduser("~/.config/a2pod/config")
@@ -151,13 +151,15 @@ def run_pipeline(
         progress("Audio done.")
 
         intro_offset = 0.0
-        if not no_intro and title_wav:
-            intro_wavs = assemble_intro(jingle, presents, title_wav, silence)
-            intro_offset = get_intro_duration(intro_wavs)
-            wav_files = intro_wavs + content_wavs
-        elif not no_intro:
-            # title TTS failed — skip intro
-            wav_files = content_wavs
+        if not no_intro:
+            outro_wav = get_cached_outro()
+            if title_wav:
+                intro_wavs = assemble_intro(jingle, presents, title_wav, silence)
+                intro_offset = get_intro_duration(intro_wavs)
+                wav_files = intro_wavs + content_wavs + [outro_wav]
+            else:
+                # title TTS failed — skip intro
+                wav_files = content_wavs + [outro_wav]
         else:
             wav_files = content_wavs
 
